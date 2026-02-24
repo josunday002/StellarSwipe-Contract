@@ -1,7 +1,4 @@
-use soroban_sdk::{contracttype, Address, Vec, Env, crypto::Ed25519Signature};
-use common::{AssetPair};
-use crate::errors::OracleError;
-use crate::types::{ExternalPrice, OracleReputation};
+use soroban_sdk::{contracttype, Address};
 
 #[contracttype]
 #[derive(Clone, Debug)]
@@ -39,15 +36,4 @@ pub struct ConsensusPriceData {
     pub price: i128,
     pub timestamp: u64,
     pub num_oracles: u32,
-}
-
-#[contracttype]
-#[derive(Clone, Debug)]
-pub struct ExternalPrice {
-    pub asset_pair: AssetPair,
-    pub price: i128,
-    pub timestamp: u64,
-    pub round_id: u64,
-    pub signature: Vec<u8>, 
-    pub oracle_address: Address,
 }

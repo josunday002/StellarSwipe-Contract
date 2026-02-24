@@ -576,19 +576,6 @@ mod tests {
         Ok(price)
     }
 
-    pub fn update_with_external_data(env: Env, prices: Vec<ExternalPrice>) -> Result<i128, OracleError> {
-        // Process the external prices using our new adapter
-        let consensus_price = crate::external_adapter::process_external_prices(&env, prices)?;
-
-        // Store the result using your existing storage logic
-        // (Assuming the first price in the vec defines the pair for this update)
-        if let Some(first) = prices.get(0) {
-            storage::set_price(&env, &first.asset_pair, consensus_price);
-        }
-
-        Ok(consensus_price)
-    }
-
 // Internal helper to represent the SDEX query
 fn fetch_sdex_orderbook(env: &Env, pair: &AssetPair) -> Result<OrderBook, OracleError> {
     // Note: Actual Soroban host functions for SDEX are currently limited 
