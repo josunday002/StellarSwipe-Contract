@@ -1,5 +1,6 @@
 #![no_std]
 
+mod admin;
 mod conversion;
 mod errors;
 mod events;
@@ -12,16 +13,31 @@ mod staleness;
 mod storage;
 mod types;
 
+ feature/emergency-pause-circuit-breaker
+use soroban_sdk::{contract, contractimpl, Address, Env, symbol_short, vec, String, Map, Vec};
+use stellar_swipe_common::{Asset, AssetPair};
+use stellar_swipe_common::emergency::{PauseState, CAT_ALL};
+use errors::OracleError;
+use types::{StorageKey, OracleReputation, PriceSubmission, ConsensusPriceData, ExternalPrice, PriceData};
+use reputation::{get_oracle_stats, track_oracle_accuracy, slash_oracle, SlashReason, adjust_oracle_weight, calculate_reputation, should_remove_oracle};
+use sdex::{OrderBook, OrderEntry};
+use staleness::StalenessLevel;
+
 use common::{Asset, AssetPair};
 use errors::OracleError;
 use soroban_sdk::{contract, contractimpl, symbol_short, vec, Address, Env};
-use types::{ConsensusPriceData, ExternalPrice, OracleReputation, PriceSubmission, StorageKey};
+use types::{ConsensusPriceData, ExternalPrice, OracleReputation, PriceSubmission, StorageKey}; main
 
 pub use multi_hop::{calculate_multi_hop_price, find_optimal_path, LiquidityPath};
 
 pub use conversion::{convert_to_base, ConversionPath};
+ feature/emergency-pause-circuit-breaker
+pub use storage::{get_base_currency, set_base_currency, get_price as storage_get_price, set_price};
+pub use history::{store_price, get_historical_price, calculate_twap, get_twap_deviation};
+
 pub use history::{calculate_twap, get_historical_price, get_twap_deviation, store_price};
 pub use storage::{get_base_currency, get_price, set_base_currency, set_price};
+ main
 
 #[contract]
 pub struct OracleContract;
@@ -35,6 +51,9 @@ impl OracleContract {
 
     /// Set price for an asset pair
     pub fn set_price(env: Env, pair: AssetPair, price: i128) -> Result<(), OracleError> {
+        if admin::is_paused(&env, String::from_str(&env, CAT_ALL)) {
+            return Err(OracleError::CircuitBreakerTripped);
+        }
         if price <= 0 {
             return Err(OracleError::InvalidAsset);
         }
@@ -42,11 +61,6 @@ impl OracleContract {
         storage::add_available_pair(&env, pair.clone());
         history::store_price(&env, &pair, price);
         Ok(())
-    }
-
-    /// Get price for an asset pair
-    pub fn get_price(env: Env, pair: AssetPair) -> Result<i128, OracleError> {
-        storage::get_price(&env, &pair)
     }
 
     /// Convert amount to base currency
@@ -95,6 +109,27 @@ impl OracleContract {
     /// Get historical price at timestamp
     pub fn get_historical_price(env: Env, pair: AssetPair, timestamp: u64) -> Option<i128> {
         history::get_historical_price(&env, &pair, timestamp)
+    }
+
+    /// Get current pause states
+    pub fn get_pause_states(env: Env) -> Map<String, PauseState> {
+        admin::get_pause_states(&env)
+    }
+
+    /// Pause a category (admin only)
+    pub fn pause_category(
+        env: Env,
+        caller: Address,
+        category: String,
+        duration: Option<u64>,
+        reason: String,
+    ) -> Result<(), OracleError> {
+        admin::pause_category(&env, &caller, category, duration, reason)
+    }
+
+    /// Unpause a category (admin only)
+    pub fn unpause_category(env: Env, caller: Address, category: String) -> Result<(), OracleError> {
+        admin::unpause_category(&env, &caller, category)
     }
 
     /// Calculate TWAP for 1 hour
@@ -344,6 +379,9 @@ impl OracleContract {
 
     /// Submit a price from an oracle
     pub fn submit_price(env: Env, oracle: Address, price: i128) -> Result<(), OracleError> {
+        if admin::is_paused(&env, String::from_str(&env, CAT_ALL)) {
+            return Err(OracleError::CircuitBreakerTripped);
+        }
         oracle.require_auth();
 
         if price <= 0 {
@@ -636,6 +674,12 @@ impl OracleContract {
         Ok(())
     }
 
+ feature/emergency-pause-circuit-breaker
+    pub fn submit_price(env: Env, source: Address, pair: AssetPair, price: i128, confidence: u32) -> Result<(), OracleError> {
+        if admin::is_paused(&env, String::from_str(&env, CAT_ALL)) {
+            return Err(OracleError::CircuitBreakerTripped);
+        }
+
     pub fn submit_price(
         env: Env,
         source: Address,
@@ -643,6 +687,7 @@ impl OracleContract {
         price: i128,
         confidence: u32,
     ) -> Result<(), OracleError> {
+ main
         source.require_auth();
 
         // Ensure source is a registered oracle
@@ -750,6 +795,7 @@ pub fn on_price_update(env: &Env, pair: AssetPair) {
     metadata.last_update = env.ledger().timestamp();
     metadata.update_count_24h += 1;
     staleness::set_metadata(env, &pair, metadata);
+}
 }
 
 #[cfg(test)]

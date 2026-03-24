@@ -1,7 +1,12 @@
 #![no_std]
 
-use soroban_sdk::{contract, contractimpl, contracttype, Address, Env, Symbol};
+ feature/emergency-pause-circuit-breaker
+use soroban_sdk::{contract, contractimpl, contracttype, Address, Env, Symbol, String};
 
+use soroban_sdk::{contract, contractimpl, contracttype, Address, Env, Symbol, String, Vec};
+ main
+
+mod admin;
 mod auth;
 mod errors;
 mod history;
@@ -9,12 +14,17 @@ mod iceberg;
 mod multi_asset;
 mod portfolio;
 mod risk;
+mod risk_parity;
 mod sdex;
 mod storage;
 mod strategies;
 
 use crate::storage::DataKey;
 use errors::AutoTradeError;
+ feature/emergency-pause-circuit-breaker
+use stellar_swipe_common::emergency::{CAT_TRADING, PauseState};
+
+use risk_parity::{AssetRisk, RebalanceTrade}; main
 
 pub use iceberg::{
     create_iceberg_order, cancel_iceberg_order, get_full_order_view, get_public_order_view,
@@ -73,6 +83,41 @@ pub struct AutoTradeContract;
 
 #[contractimpl]
 impl AutoTradeContract {
+    /// Initialize the contract with an admin
+    pub fn initialize(env: Env, admin: Address) {
+        admin::init_admin(&env, admin);
+    }
+
+    /// Pause a category (admin only)
+    pub fn pause_category(
+        env: Env,
+        caller: Address,
+        category: String,
+        duration: Option<u64>,
+        reason: String,
+    ) -> Result<(), AutoTradeError> {
+        admin::pause_category(&env, &caller, category, duration, reason)
+    }
+
+    /// Unpause a category (admin only)
+    pub fn unpause_category(env: Env, caller: Address, category: String) -> Result<(), AutoTradeError> {
+        admin::unpause_category(&env, &caller, category)
+    }
+
+    /// Get current pause states
+    pub fn get_pause_states(env: Env) -> soroban_sdk::Map<String, PauseState> {
+        admin::get_pause_states(&env)
+    }
+
+    /// Set circuit breaker configuration (admin only)
+    pub fn set_circuit_breaker_config(
+        env: Env,
+        caller: Address,
+        config: stellar_swipe_common::emergency::CircuitBreakerConfig,
+    ) -> Result<(), AutoTradeError> {
+        admin::set_cb_config(&env, &caller, config)
+    }
+
     /// Execute a trade on behalf of a user based on a signal
     pub fn execute_trade(
         env: Env,
@@ -81,6 +126,11 @@ impl AutoTradeContract {
         order_type: OrderType,
         amount: i128,
     ) -> Result<TradeResult, AutoTradeError> {
+        // Check if trading is paused
+        if admin::is_paused(&env, String::from_str(&env, CAT_TRADING)) {
+            return Err(AutoTradeError::TradingPaused);
+        }
+
         if amount <= 0 {
             return Err(AutoTradeError::InvalidAmount);
         }
@@ -142,6 +192,14 @@ impl AutoTradeContract {
         } else {
             TradeStatus::Filled
         };
+
+        // Update circuit breaker stats
+        admin::update_cb_stats(
+            &env,
+            status == TradeStatus::Failed,
+            execution.executed_amount,
+            execution.executed_price,
+        );
 
         let trade = Trade {
             signal_id,
@@ -275,6 +333,52 @@ impl AutoTradeContract {
     /// Get user portfolio with holdings and P&L
     pub fn get_portfolio(env: Env, user: Address) -> portfolio::Portfolio {
         portfolio::get_portfolio(&env, &user)
+    }
+
+    /// Set risk parity configuration
+    pub fn set_risk_parity_config(
+        env: Env,
+        user: Address,
+        enabled: bool,
+        rebalance_frequency_days: u32,
+        threshold_pct: u32,
+    ) -> Result<(), AutoTradeError> {
+        if !cfg!(test) {
+            user.require_auth();
+        }
+        let mut config = risk::get_risk_parity_config(&env, &user);
+        config.enabled = enabled;
+        config.rebalance_frequency_days = rebalance_frequency_days;
+        config.threshold_pct = threshold_pct;
+        risk::set_risk_parity_config(&env, &user, &config);
+        Ok(())
+    }
+
+    /// Get risk parity configuration
+    pub fn get_risk_parity_config(env: Env, user: Address) -> risk::RiskParityConfig {
+        risk::get_risk_parity_config(&env, &user)
+    }
+
+    /// Preview a risk parity rebalance
+    pub fn preview_risk_parity_rebalance(
+        env: Env,
+        user: Address,
+    ) -> Result<(Vec<AssetRisk>, Vec<RebalanceTrade>), AutoTradeError> {
+        risk_parity::calculate_risk_parity_rebalance(&env, &user)
+    }
+
+    /// Manually trigger a risk parity rebalance
+    pub fn trigger_risk_parity_rebalance(env: Env, user: Address) -> Result<(), AutoTradeError> {
+        if !cfg!(test) {
+            user.require_auth();
+        }
+        risk_parity::execute_risk_parity_rebalance(&env, &user)
+    }
+
+    /// Record a price for volatility tracking (usually called by oracle)
+    pub fn record_asset_price(env: Env, asset_id: u32, price: i128) {
+        risk::record_price(&env, asset_id, price);
+        risk::set_asset_price(&env, asset_id, price);
     }
 
     /// Grant authorization to execute trades

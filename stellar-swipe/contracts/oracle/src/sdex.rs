@@ -1,12 +1,21 @@
+ feature/emergency-pause-circuit-breaker
+use soroban_sdk::{contracttype, Env, Address, Vec, panic_with_error};
+use stellar_swipe_common::{Asset, AssetPair};
+
+ main
 use crate::errors::OracleError;
 use common::{Asset, AssetPair};
 use soroban_sdk::{panic_with_error, Address, Env, Vec};
 
+#[contracttype]
+#[derive(Clone, Debug)]
 pub struct OrderEntry {
     pub price: i128,
     pub amount: i128,
 }
 
+#[contracttype]
+#[derive(Clone, Debug)]
 pub struct OrderBook {
     pub bids: Vec<OrderEntry>,
     pub asks: Vec<OrderEntry>,

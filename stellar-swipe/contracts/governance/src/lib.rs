@@ -1,12 +1,25 @@
 #![no_std]
+#![allow(clippy::too_many_arguments)]
 
+mod committees;
 mod distribution;
 mod errors;
 mod token;
+mod treasury;
 
 #[cfg(test)]
 mod test;
 
+use committees::{
+    list_committees as list_registered_committees, CommitteeAction, CommitteeElection,
+    CommitteeReport, CommitteesState, CrossCommitteeRequest, VoteType,
+};
+pub use committees::{
+    Authority, Committee, CommitteeDecision, CrossCommitteeStatus, DecisionStatus,
+    EmergencyActionAuthority, EmergencyActionPayload, GrantApprovalAction, GrantApprovalAuthority,
+    ParameterAdjustmentAuthority, PerformanceMetrics, RewardConfigUpdateAction,
+    TreasurySpendAction, TreasurySpendAuthority, VetoAuthority, VetoPayload,
+};
 use distribution::{
     circulating_supply as calculate_circulating_supply, create_vesting_schedule as create_schedule,
     distribution_state as load_distribution_state, get_schedule, initialize_distribution,
@@ -17,7 +30,12 @@ pub use errors::GovernanceError;
 use soroban_sdk::{
     contract, contractimpl, contracttype, symbol_short, Address, Env, Map, String, Symbol, Vec,
 };
+use stellar_swipe_common::Asset;
 pub use token::{HolderAnalytics, HolderBalance, TokenMetadata};
+pub use treasury::{
+    Budget, BudgetReport, RebalanceAction, RecurringPayment, Treasury, TreasuryReport,
+    TreasurySpend,
+};
 
 const DEFAULT_LIQUIDITY_REWARD_BPS: u32 = 100;
 const DEFAULT_MIN_CLAIM_THRESHOLD: i128 = 100;
@@ -38,8 +56,11 @@ pub enum StorageKey {
     Holders,
     DistributionState,
     VoteLocks,
+    Treasury,
+    Committees,
 }
 
+#[allow(clippy::too_many_arguments)]
 #[contractimpl]
 impl GovernanceContract {
     pub fn initialize(
@@ -94,6 +115,13 @@ impl GovernanceContract {
         env.storage()
             .instance()
             .set(&StorageKey::Holders, &Vec::<Address>::new(&env));
+        env.storage()
+            .instance()
+            .set(&StorageKey::Treasury, &treasury::empty_treasury(&env));
+        env.storage().instance().set(
+            &StorageKey::Committees,
+            &committees::empty_committees_state(&env),
+        );
 
         let distribution = initialize_distribution(
             &env,
@@ -280,6 +308,468 @@ impl GovernanceContract {
 
     pub fn analytics(env: Env, top_n: u32) -> Result<HolderAnalytics, GovernanceError> {
         token::analytics(&env, top_n)
+    }
+
+    pub fn treasury(env: Env) -> Result<Treasury, GovernanceError> {
+        require_initialized(&env)?;
+        Ok(get_treasury(&env))
+    }
+
+    pub fn set_treasury_asset(
+        env: Env,
+        admin: Address,
+        asset: Asset,
+        amount: i128,
+    ) -> Result<Treasury, GovernanceError> {
+        require_admin(&env, &admin)?;
+        let mut treasury = get_treasury(&env);
+        treasury::set_asset_balance(&env, &mut treasury, asset, amount)?;
+        put_treasury(&env, &treasury);
+        emit_admin_action(&env, symbol_short!("trsasset"), &admin, amount);
+        Ok(treasury)
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub fn create_budget(
+        env: Env,
+        admin: Address,
+        category: String,
+        allocated: i128,
+        spend_limit: i128,
+        period_start: u64,
+        period_end: u64,
+        auto_renew: bool,
+    ) -> Result<Budget, GovernanceError> {
+        require_admin(&env, &admin)?;
+        let mut treasury = get_treasury(&env);
+        let budget = treasury::upsert_budget(
+            &env,
+            &mut treasury,
+            category,
+            allocated,
+            spend_limit,
+            period_start,
+            period_end,
+            auto_renew,
+        )?;
+        put_treasury(&env, &treasury);
+        emit_admin_action(&env, symbol_short!("budget"), &admin, allocated);
+        Ok(budget)
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub fn execute_treasury_spend(
+        env: Env,
+        admin: Address,
+        recipient: Address,
+        amount: i128,
+        asset: Asset,
+        category: String,
+        purpose: String,
+        approved_by_proposal: Option<u64>,
+    ) -> Result<TreasurySpend, GovernanceError> {
+        require_admin(&env, &admin)?;
+        let mut treasury = get_treasury(&env);
+        let spend = treasury::execute_spend(
+            &mut treasury,
+            recipient,
+            amount,
+            asset,
+            category,
+            purpose,
+            approved_by_proposal,
+            env.ledger().timestamp(),
+        )?;
+        put_treasury(&env, &treasury);
+        emit_admin_action(&env, symbol_short!("spend"), &admin, spend.amount);
+        Ok(spend)
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub fn create_recurring_payment(
+        env: Env,
+        admin: Address,
+        recipient: Address,
+        amount: i128,
+        asset: Asset,
+        frequency: u64,
+        category: String,
+        purpose: String,
+        approved_by_proposal: Option<u64>,
+        end_date: Option<u64>,
+    ) -> Result<RecurringPayment, GovernanceError> {
+        require_admin(&env, &admin)?;
+        let mut treasury = get_treasury(&env);
+        let payment = treasury::schedule_recurring_payment(
+            &env,
+            &mut treasury,
+            recipient,
+            amount,
+            asset,
+            frequency,
+            category,
+            purpose,
+            approved_by_proposal,
+            end_date,
+        )?;
+        put_treasury(&env, &treasury);
+        emit_admin_action(&env, symbol_short!("recur"), &admin, amount);
+        Ok(payment)
+    }
+
+    pub fn process_recurring_payments(env: Env, admin: Address) -> Result<u32, GovernanceError> {
+        require_admin(&env, &admin)?;
+        let mut treasury = get_treasury(&env);
+        let processed =
+            treasury::process_recurring_payments(&mut treasury, env.ledger().timestamp())?;
+        put_treasury(&env, &treasury);
+        emit_admin_action(&env, symbol_short!("payrun"), &admin, processed as i128);
+        Ok(processed)
+    }
+
+    pub fn treasury_report(env: Env) -> Result<TreasuryReport, GovernanceError> {
+        require_initialized(&env)?;
+        treasury::build_report(&env, &get_treasury(&env))
+    }
+
+    pub fn committees(env: Env) -> Result<Vec<Committee>, GovernanceError> {
+        require_initialized(&env)?;
+        Ok(list_registered_committees(
+            &env,
+            &get_committees_state(&env),
+        ))
+    }
+
+    pub fn committee(env: Env, committee_id: u64) -> Result<Committee, GovernanceError> {
+        require_initialized(&env)?;
+        committees::get_committee(&get_committees_state(&env), committee_id)
+    }
+
+    pub fn create_committee(
+        env: Env,
+        admin: Address,
+        name: String,
+        description: String,
+        initial_members: Vec<Address>,
+        chair: Address,
+        max_members: u32,
+        authorities: Vec<Authority>,
+        term_duration_days: Option<u32>,
+    ) -> Result<Committee, GovernanceError> {
+        require_admin(&env, &admin)?;
+        let mut committees_state = get_committees_state(&env);
+        let committee = committees::create_committee(
+            &env,
+            &mut committees_state,
+            name,
+            description,
+            initial_members,
+            chair,
+            max_members,
+            authorities,
+            term_duration_days,
+        )?;
+        put_committees_state(&env, &committees_state);
+        emit_admin_action(&env, symbol_short!("cmtadd"), &admin, committee.id as i128);
+        Ok(committee)
+    }
+
+    pub fn propose_committee_decision(
+        env: Env,
+        committee_id: u64,
+        proposer: Address,
+        proposal: String,
+        action: CommitteeAction,
+    ) -> Result<CommitteeDecision, GovernanceError> {
+        require_initialized(&env)?;
+        proposer.require_auth();
+        let mut committees_state = get_committees_state(&env);
+        let decision = committees::propose_decision(
+            &env,
+            &mut committees_state,
+            committee_id,
+            proposer,
+            proposal,
+            action,
+        )?;
+        put_committees_state(&env, &committees_state);
+        Ok(decision)
+    }
+
+    pub fn vote_on_committee_decision(
+        env: Env,
+        committee_id: u64,
+        decision_id: u64,
+        voter: Address,
+        vote: VoteType,
+    ) -> Result<CommitteeDecision, GovernanceError> {
+        require_initialized(&env)?;
+        voter.require_auth();
+        let mut committees_state = get_committees_state(&env);
+        let decision = committees::vote_on_decision(
+            &mut committees_state,
+            committee_id,
+            decision_id,
+            voter,
+            vote,
+        )?;
+        put_committees_state(&env, &committees_state);
+        Ok(decision)
+    }
+
+    pub fn execute_committee_decision(
+        env: Env,
+        committee_id: u64,
+        decision_id: u64,
+        executor: Address,
+    ) -> Result<CommitteeDecision, GovernanceError> {
+        require_initialized(&env)?;
+        executor.require_auth();
+        let mut committees_state = get_committees_state(&env);
+        let decision = committees::execute_decision(
+            &env,
+            &mut committees_state,
+            committee_id,
+            decision_id,
+            executor,
+        )?;
+        put_committees_state(&env, &committees_state);
+        Ok(decision)
+    }
+
+    pub fn start_committee_election(
+        env: Env,
+        admin: Address,
+        committee_id: u64,
+        positions_available: u32,
+        duration_days: u32,
+    ) -> Result<CommitteeElection, GovernanceError> {
+        require_admin(&env, &admin)?;
+        let mut committees_state = get_committees_state(&env);
+        let election = committees::start_election(
+            &env,
+            &mut committees_state,
+            committee_id,
+            positions_available,
+            duration_days,
+        )?;
+        put_committees_state(&env, &committees_state);
+        emit_admin_action(
+            &env,
+            symbol_short!("cmtelect"),
+            &admin,
+            committee_id as i128,
+        );
+        Ok(election)
+    }
+
+    pub fn committee_election(
+        env: Env,
+        committee_id: u64,
+    ) -> Result<CommitteeElection, GovernanceError> {
+        require_initialized(&env)?;
+        committees::get_election(&get_committees_state(&env), committee_id)
+    }
+
+    pub fn nominate_for_committee(
+        env: Env,
+        committee_id: u64,
+        nominee: Address,
+        nominator: Address,
+    ) -> Result<CommitteeElection, GovernanceError> {
+        require_initialized(&env)?;
+        nominee.require_auth();
+        nominator.require_auth();
+        let mut committees_state = get_committees_state(&env);
+        let election = committees::nominate_for_committee(
+            &env,
+            &mut committees_state,
+            committee_id,
+            nominee,
+            nominator,
+        )?;
+        put_committees_state(&env, &committees_state);
+        Ok(election)
+    }
+
+    pub fn vote_in_committee_election(
+        env: Env,
+        committee_id: u64,
+        voter: Address,
+        candidate: Address,
+    ) -> Result<CommitteeElection, GovernanceError> {
+        require_initialized(&env)?;
+        voter.require_auth();
+        let mut committees_state = get_committees_state(&env);
+        let election = committees::vote_in_election(
+            &env,
+            &mut committees_state,
+            committee_id,
+            voter,
+            candidate,
+        )?;
+        put_committees_state(&env, &committees_state);
+        Ok(election)
+    }
+
+    pub fn finalize_committee_election(
+        env: Env,
+        admin: Address,
+        committee_id: u64,
+    ) -> Result<Vec<Address>, GovernanceError> {
+        require_admin(&env, &admin)?;
+        let mut committees_state = get_committees_state(&env);
+        let winners = committees::finalize_election(&env, &mut committees_state, committee_id)?;
+        put_committees_state(&env, &committees_state);
+        emit_admin_action(
+            &env,
+            symbol_short!("cmtfinal"),
+            &admin,
+            committee_id as i128,
+        );
+        Ok(winners)
+    }
+
+    pub fn set_committee_approval_rating(
+        env: Env,
+        admin: Address,
+        committee_id: u64,
+        community_approval_rating: u32,
+    ) -> Result<Committee, GovernanceError> {
+        require_admin(&env, &admin)?;
+        let mut committees_state = get_committees_state(&env);
+        let committee = committees::set_community_approval_rating(
+            &mut committees_state,
+            committee_id,
+            community_approval_rating,
+        )?;
+        put_committees_state(&env, &committees_state);
+        emit_admin_action(
+            &env,
+            symbol_short!("cmtrank"),
+            &admin,
+            community_approval_rating as i128,
+        );
+        Ok(committee)
+    }
+
+    pub fn committee_report(
+        env: Env,
+        committee_id: u64,
+    ) -> Result<CommitteeReport, GovernanceError> {
+        require_initialized(&env)?;
+        committees::report_activity(&env, &get_committees_state(&env), committee_id)
+    }
+
+    pub fn override_committee_decision(
+        env: Env,
+        admin: Address,
+        committee_id: u64,
+        decision_id: u64,
+    ) -> Result<CommitteeDecision, GovernanceError> {
+        require_admin(&env, &admin)?;
+        let mut committees_state = get_committees_state(&env);
+        let decision =
+            committees::override_decision(&mut committees_state, committee_id, decision_id)?;
+        put_committees_state(&env, &committees_state);
+        emit_admin_action(&env, symbol_short!("cmtover"), &admin, decision_id as i128);
+        Ok(decision)
+    }
+
+    pub fn dissolve_committee(
+        env: Env,
+        admin: Address,
+        committee_id: u64,
+    ) -> Result<Committee, GovernanceError> {
+        require_admin(&env, &admin)?;
+        let mut committees_state = get_committees_state(&env);
+        let committee = committees::dissolve_committee(&env, &mut committees_state, committee_id)?;
+        put_committees_state(&env, &committees_state);
+        emit_admin_action(&env, symbol_short!("cmtdrop"), &admin, committee_id as i128);
+        Ok(committee)
+    }
+
+    pub fn request_cross_committee_approval(
+        env: Env,
+        requesting_committee: u64,
+        requester: Address,
+        approving_committees: Vec<u64>,
+        proposal: String,
+    ) -> Result<CrossCommitteeRequest, GovernanceError> {
+        require_initialized(&env)?;
+        requester.require_auth();
+        let mut committees_state = get_committees_state(&env);
+        let request = committees::request_cross_committee_approval(
+            &env,
+            &mut committees_state,
+            requesting_committee,
+            requester,
+            approving_committees,
+            proposal,
+        )?;
+        put_committees_state(&env, &committees_state);
+        Ok(request)
+    }
+
+    pub fn approve_cross_committee_request(
+        env: Env,
+        request_id: u64,
+        approving_committee: u64,
+        approver: Address,
+        decision_id: u64,
+    ) -> Result<CrossCommitteeRequest, GovernanceError> {
+        require_initialized(&env)?;
+        approver.require_auth();
+        let mut committees_state = get_committees_state(&env);
+        let request = committees::approve_cross_committee_request(
+            &mut committees_state,
+            request_id,
+            approving_committee,
+            approver,
+            decision_id,
+        )?;
+        put_committees_state(&env, &committees_state);
+        Ok(request)
+    }
+
+    pub fn cross_committee_request(
+        env: Env,
+        request_id: u64,
+    ) -> Result<CrossCommitteeRequest, GovernanceError> {
+        require_initialized(&env)?;
+        committees::get_cross_committee_request(&get_committees_state(&env), request_id)
+    }
+
+    pub fn set_rebalance_target(
+        env: Env,
+        admin: Address,
+        asset: Asset,
+        target_bps: i128,
+    ) -> Result<Treasury, GovernanceError> {
+        require_admin(&env, &admin)?;
+        let mut treasury = get_treasury(&env);
+        treasury::set_rebalance_target(&env, &mut treasury, asset, target_bps)?;
+        put_treasury(&env, &treasury);
+        emit_admin_action(&env, symbol_short!("target"), &admin, target_bps);
+        Ok(treasury)
+    }
+
+    pub fn rebalance_treasury(
+        env: Env,
+        admin: Address,
+        prices: Map<Asset, i128>,
+    ) -> Result<Vec<RebalanceAction>, GovernanceError> {
+        require_admin(&env, &admin)?;
+        let mut treasury = get_treasury(&env);
+        let actions = treasury::rebalance(&mut treasury, prices, env.ledger().timestamp(), &env)?;
+        put_treasury(&env, &treasury);
+        emit_admin_action(
+            &env,
+            symbol_short!("rebalance"),
+            &admin,
+            treasury.total_value_usd,
+        );
+        Ok(actions)
     }
 }
 
@@ -471,6 +961,32 @@ pub(crate) fn get_vote_locks(env: &Env) -> Map<Address, u32> {
         .instance()
         .get(&StorageKey::VoteLocks)
         .unwrap_or(Map::new(env))
+}
+
+pub(crate) fn get_treasury(env: &Env) -> Treasury {
+    env.storage()
+        .instance()
+        .get(&StorageKey::Treasury)
+        .unwrap_or_else(|| treasury::empty_treasury(env))
+}
+
+pub(crate) fn put_treasury(env: &Env, treasury_state: &Treasury) {
+    env.storage()
+        .instance()
+        .set(&StorageKey::Treasury, treasury_state);
+}
+
+pub(crate) fn get_committees_state(env: &Env) -> CommitteesState {
+    env.storage()
+        .instance()
+        .get(&StorageKey::Committees)
+        .unwrap_or_else(|| committees::empty_committees_state(env))
+}
+
+pub(crate) fn put_committees_state(env: &Env, committees_state: &CommitteesState) {
+    env.storage()
+        .instance()
+        .set(&StorageKey::Committees, committees_state);
 }
 
 pub(crate) fn put_vote_locks(env: &Env, locks: &Map<Address, u32>) {

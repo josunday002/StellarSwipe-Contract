@@ -18,7 +18,7 @@ const WEIGHT_TOTAL: u32 = 10000; // 100% in basis points
 
 /// The execution model for a combo signal.
 #[contracttype]
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub enum ComboType {
     /// All component signals execute simultaneously.
     Simultaneous,
@@ -30,7 +30,7 @@ pub enum ComboType {
 
 /// What must be true of a dependency signal before this one executes.
 #[contracttype]
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub enum ConditionType {
     /// The dependency signal must have a Successful / positive-ROI execution.
     Success,
@@ -42,11 +42,19 @@ pub enum ConditionType {
 
 /// A dependency condition tied to another signal inside the same combo.
 #[contracttype]
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Condition {
     /// signal_id of the upstream component this depends on.
     pub depends_on: u64,
     pub condition_type: ConditionType,
+}
+
+/// Helper to bypass Option<T> contracttype issues for custom structs.
+#[contracttype]
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum ConditionGate {
+    None,
+    Some(Condition),
 }
 
 /// A single component within a combo.
@@ -57,12 +65,12 @@ pub struct ComponentSignal {
     /// Capital allocation in basis points (10000 = 100%).
     pub weight: u32,
     /// Optional execution gate; only relevant for Conditional combos.
-    pub condition: Option<Condition>,
+    pub condition: ConditionGate,
 }
 
 /// The lifecycle status of a combo.
 #[contracttype]
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub enum ComboStatus {
     Active,
     Cancelled,
@@ -230,17 +238,20 @@ pub fn create_combo_signal(
         }
         for i in 0..components.len() {
             let comp = components.get(i).unwrap();
-            if let Some(cond) = comp.condition {
-                let mut found = false;
-                for j in 0..component_ids.len() {
-                    if component_ids.get(j).unwrap() == cond.depends_on {
-                        found = true;
-                        break;
+            match &comp.condition {
+                ConditionGate::Some(cond) => {
+                    let mut found = false;
+                    for j in 0..component_ids.len() {
+                        if component_ids.get(j).unwrap() == cond.depends_on {
+                            found = true;
+                            break;
+                        }
+                    }
+                    if !found {
+                        return Err(ComboError::InvalidConditionReference);
                     }
                 }
-                if !found {
-                    return Err(ComboError::InvalidConditionReference);
-                }
+                ConditionGate::None => {}
             }
         }
     }
@@ -475,8 +486,8 @@ fn evaluate_condition(
     previous: &Vec<ComponentExecution>,
 ) -> Result<bool, ComboError> {
     let cond = match &comp.condition {
-        None => return Ok(true), // no condition = always execute
-        Some(c) => c,
+        ConditionGate::None => return Ok(true), // no condition = always execute
+        ConditionGate::Some(c) => c,
     };
 
     // Find the prior execution for the depends_on signal

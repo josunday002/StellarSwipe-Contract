@@ -21,6 +21,7 @@ pub enum AdminError {
     ScheduleLimitReached = 18,
     ScheduleNotFound = 19,
     NotScheduleOwner = 20,
+    CircuitBreakerTriggered = 21,
 }
 
 #[contracterror]
@@ -51,6 +52,7 @@ pub enum PerformanceError {
     InvalidVolume = 203,
     SignalExpired = 204,
     NoExecutions = 205,
+    TradingPaused = 206,
 }
 
 #[contracterror]
@@ -117,6 +119,8 @@ pub enum ComboError {
     InvalidConditionReference = 609,
     ComboNotActive = 610,
     InvalidAmount = 611,
+    TradingPaused = 612,
+    CircuitBreakerTriggered = 613,
 }
 
 #[contracterror]
@@ -129,6 +133,8 @@ pub enum ContestError {
     ContestNotEnded = 803,
     AlreadyFinalized = 804,
     NotQualified = 805,
+    TradingPaused = 806,
+    CircuitBreakerTriggered = 807,
 }
 
 #[contracterror]
@@ -143,4 +149,17 @@ pub enum VersioningError {
     InvalidPrice = 905,
     InvalidExpiry = 906,
     VersionNotFound = 907,
+}
+
+#[contracterror]
+#[derive(Copy, Clone, Debug, Eq, PartialEq, PartialOrd, Ord)]
+#[repr(u32)]
+pub enum CrossChainError {
+    SignalAlreadyExists = 1000,
+    SignalNotFound = 1001,
+    VerificationFailed = 1002,
+    InvalidProof = 1003,
+    AddressNotRegistered = 1004,
+    InvalidSyncStatus = 1005,
+    NotSignalOwner = 1006,
 }

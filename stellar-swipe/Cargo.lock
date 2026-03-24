@@ -155,6 +155,7 @@ name = "auto_trade"
 version = "0.0.0"
 dependencies = [
  "soroban-sdk",
+ "stellar_swipe_common",
 ]
 
 [[package]]
@@ -645,6 +646,7 @@ name = "governance"
 version = "0.0.0"
 dependencies = [
  "soroban-sdk",
+ "stellar_swipe_common",
 ]
 
 [[package]]

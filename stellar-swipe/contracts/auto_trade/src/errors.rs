@@ -13,6 +13,9 @@ pub enum AutoTradeError {
     DailyTradeLimitExceeded = 7,
     PositionLimitExceeded = 8,
     StopLossTriggered = 9,
+ feature/emergency-pause-circuit-breaker
+    TradingPaused = 10,
+
  strategy
     StrategyNotFound = 10,
     PositionAlreadyExists = 11,
@@ -27,5 +30,6 @@ pub enum AutoTradeError {
     NoActivePortfolio = 15,
     NoTradeSignal = 16,
     InvalidStatArbConfig = 17,
+ main
  main
 }
