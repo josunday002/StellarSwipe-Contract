@@ -572,11 +572,12 @@ fn test_grant_authorization_success() {
     let user = Address::generate(&env);
 
     env.as_contract(&contract_id, || {
-        let res = AutoTradeContract::grant_authorization(env.clone(), user.clone(), 500_0000000, 30);
+        let res =
+            AutoTradeContract::grant_authorization(env.clone(), user.clone(), 500_0000000, 30);
         assert!(res.is_ok());
 
         let config = AutoTradeContract::get_auth_config(env.clone(), user.clone()).unwrap();
-        assert_eq!(config.authorized, true);
+        assert!(config.authorized);
         assert_eq!(config.max_trade_amount, 500_0000000);
         assert_eq!(config.expires_at, 1000 + (30 * 86400));
     });
@@ -601,9 +602,8 @@ fn test_revoke_authorization() {
     let user = Address::generate(&env);
 
     env.as_contract(&contract_id, || {
-        AutoTradeContract::grant_authorization(env.clone(), user.clone(), 1000_0000000, 30)
-            .unwrap();
-        AutoTradeContract::revoke_authorization(env.clone(), user.clone()).unwrap();
+        storage::authorize_user_with_limits(&env, &user, 1000_0000000, 30);
+        storage::revoke_user_authorization(&env, &user);
 
         let config = AutoTradeContract::get_auth_config(env.clone(), user.clone());
         assert!(config.is_none());
@@ -620,8 +620,7 @@ fn test_trade_under_limit_succeeds() {
 
     env.as_contract(&contract_id, || {
         storage::set_signal(&env, signal_id, &signal);
-        AutoTradeContract::grant_authorization(env.clone(), user.clone(), 500_0000000, 30)
-            .unwrap();
+        storage::authorize_user_with_limits(&env, &user, 500_0000000, 30);
         env.storage()
             .temporary()
             .set(&(user.clone(), symbol_short!("balance")), &1000_0000000i128);
@@ -650,8 +649,7 @@ fn test_trade_over_limit_fails() {
 
     env.as_contract(&contract_id, || {
         storage::set_signal(&env, signal_id, &signal);
-        AutoTradeContract::grant_authorization(env.clone(), user.clone(), 500_0000000, 30)
-            .unwrap();
+        storage::authorize_user_with_limits(&env, &user, 500_0000000, 30);
         env.storage()
             .temporary()
             .set(&(user.clone(), symbol_short!("balance")), &1000_0000000i128);
@@ -677,9 +675,8 @@ fn test_revoked_authorization_blocks_trade() {
 
     env.as_contract(&contract_id, || {
         storage::set_signal(&env, signal_id, &signal);
-        AutoTradeContract::grant_authorization(env.clone(), user.clone(), 1000_0000000, 30)
-            .unwrap();
-        AutoTradeContract::revoke_authorization(env.clone(), user.clone()).unwrap();
+        storage::authorize_user_with_limits(&env, &user, 1000_0000000, 30);
+        storage::revoke_user_authorization(&env, &user);
 
         let res = AutoTradeContract::execute_trade(
             env.clone(),
@@ -703,8 +700,7 @@ fn test_expired_authorization_blocks_trade() {
     env.as_contract(&contract_id, || {
         storage::set_signal(&env, signal_id, &signal);
         // Grant with 1 day duration
-        AutoTradeContract::grant_authorization(env.clone(), user.clone(), 1000_0000000, 1)
-            .unwrap();
+        storage::authorize_user_with_limits(&env, &user, 1000_0000000, 1);
 
         // Fast forward time beyond expiry
         env.ledger().set_timestamp(1000 + 86400 + 1);
@@ -727,10 +723,8 @@ fn test_multiple_authorization_grants_latest_applies() {
     let user = Address::generate(&env);
 
     env.as_contract(&contract_id, || {
-        AutoTradeContract::grant_authorization(env.clone(), user.clone(), 500_0000000, 30)
-            .unwrap();
-        AutoTradeContract::grant_authorization(env.clone(), user.clone(), 1000_0000000, 60)
-            .unwrap();
+        storage::authorize_user_with_limits(&env, &user, 500_0000000, 30);
+        storage::authorize_user_with_limits(&env, &user, 1000_0000000, 60);
 
         let config = AutoTradeContract::get_auth_config(env.clone(), user.clone()).unwrap();
         assert_eq!(config.max_trade_amount, 1000_0000000);
@@ -748,8 +742,7 @@ fn test_authorization_at_exact_limit() {
 
     env.as_contract(&contract_id, || {
         storage::set_signal(&env, signal_id, &signal);
-        AutoTradeContract::grant_authorization(env.clone(), user.clone(), 500_0000000, 30)
-            .unwrap();
+        storage::authorize_user_with_limits(&env, &user, 500_0000000, 30);
         env.storage()
             .temporary()
             .set(&(user.clone(), symbol_short!("balance")), &1000_0000000i128);
