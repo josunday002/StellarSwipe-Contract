@@ -6,8 +6,8 @@ use crate::risk;
 use crate::storage;
 use soroban_sdk::{
     symbol_short,
-    testutils::{Address as _, Ledger as _},
-    Env,
+    testutils::{Address as _, Events as _, Ledger as _},
+    Address, Env, IntoVal, Symbol, Val,
 };
 
 fn setup_env() -> Env {
@@ -449,6 +449,8 @@ fn test_get_default_risk_config() {
         assert_eq!(config.max_position_pct, 20);
         assert_eq!(config.daily_trade_limit, 10);
         assert_eq!(config.stop_loss_pct, 15);
+        assert!(!config.trailing_stop_enabled);
+        assert_eq!(config.trailing_stop_pct, 1000);
     });
 }
 
@@ -463,6 +465,8 @@ fn test_set_custom_risk_config() {
             max_position_pct: 30,
             daily_trade_limit: 15,
             stop_loss_pct: 10,
+            trailing_stop_enabled: true,
+            trailing_stop_pct: 1500,
         };
 
         AutoTradeContract::set_risk_config(env.clone(), user.clone(), custom_config.clone());
@@ -538,6 +542,7 @@ fn test_get_user_positions() {
         let position = positions.get(1).unwrap();
         assert_eq!(position.amount, 400);
         assert_eq!(position.entry_price, 100);
+        assert_eq!(position.high_price, 100);
     });
 }
 
@@ -564,6 +569,213 @@ fn test_stop_loss_check() {
 }
 
 #[test]
+fn test_trailing_stop_tracks_high_water_mark() {
+    let env = setup_env();
+    let contract_id = env.register(AutoTradeContract, ());
+    let user = Address::generate(&env);
+
+    env.as_contract(&contract_id, || {
+        risk::set_risk_config(
+            &env,
+            &user,
+            &risk::RiskConfig {
+                max_position_pct: 20,
+                daily_trade_limit: 10,
+                stop_loss_pct: 15,
+                trailing_stop_enabled: true,
+                trailing_stop_pct: 1000,
+            },
+        );
+        risk::update_position(&env, &user, 1, 1_000, 100);
+
+        assert_eq!(
+            AutoTradeContract::get_trailing_stop_price(env.clone(), user.clone(), 1),
+            Some(90)
+        );
+
+        let first = AutoTradeContract::process_price_update(env.clone(), user.clone(), 1, 150);
+        assert!(first.is_none());
+        assert_eq!(
+            AutoTradeContract::get_trailing_stop_price(env.clone(), user.clone(), 1),
+            Some(135)
+        );
+
+        let second = AutoTradeContract::process_price_update(env.clone(), user.clone(), 1, 200);
+        assert!(second.is_none());
+        assert_eq!(
+            AutoTradeContract::get_trailing_stop_price(env.clone(), user.clone(), 1),
+            Some(180)
+        );
+    });
+}
+
+#[test]
+fn test_trailing_stop_triggers_auto_sell_and_event() {
+    let env = setup_env();
+    let contract_id = env.register(AutoTradeContract, ());
+    let user = Address::generate(&env);
+
+    env.as_contract(&contract_id, || {
+        risk::set_risk_config(
+            &env,
+            &user,
+            &risk::RiskConfig {
+                max_position_pct: 20,
+                daily_trade_limit: 10,
+                stop_loss_pct: 15,
+                trailing_stop_enabled: true,
+                trailing_stop_pct: 1000,
+            },
+        );
+        risk::update_position(&env, &user, 1, 1_000, 100);
+        AutoTradeContract::process_price_update(env.clone(), user.clone(), 1, 200);
+
+        let result = AutoTradeContract::process_price_update(env.clone(), user.clone(), 1, 180)
+            .unwrap();
+        assert_eq!(result.execution_price, 180);
+        assert_eq!(result.trigger_price, 180);
+        assert_eq!(result.sold_amount, 1_000);
+        assert_eq!(result.remaining_amount, 0);
+
+        let positions = AutoTradeContract::get_user_positions(env.clone(), user.clone());
+        assert!(!positions.contains_key(1));
+
+        let expected_topics = (
+            Symbol::new(&env, "trailing_stop_triggered"),
+            user.clone(),
+            1u32,
+        )
+            .into_val(&env);
+        let expected_data: Val = result.into_val(&env);
+        let events = env.events().all();
+        assert!(events.iter().any(|event| {
+            event.1 == expected_topics && event.2 == expected_data
+        }));
+    });
+}
+
+#[test]
+fn test_trailing_stop_partial_fill_keeps_remaining_position() {
+    let env = setup_env();
+    let contract_id = env.register(AutoTradeContract, ());
+    let user = Address::generate(&env);
+
+    env.as_contract(&contract_id, || {
+        risk::set_risk_config(
+            &env,
+            &user,
+            &risk::RiskConfig {
+                max_position_pct: 20,
+                daily_trade_limit: 10,
+                stop_loss_pct: 15,
+                trailing_stop_enabled: true,
+                trailing_stop_pct: 1000,
+            },
+        );
+        risk::update_position(&env, &user, 1, 1_000, 100);
+        AutoTradeContract::process_price_update(env.clone(), user.clone(), 1, 200);
+        env.storage()
+            .temporary()
+            .set(&(symbol_short!("asset_liq"), 1u32), &400i128);
+
+        let result = AutoTradeContract::process_price_update(env.clone(), user.clone(), 1, 170)
+            .unwrap();
+        assert_eq!(result.sold_amount, 400);
+        assert_eq!(result.remaining_amount, 600);
+
+        let position = AutoTradeContract::get_user_positions(env.clone(), user.clone())
+            .get(1)
+            .unwrap();
+        assert_eq!(position.amount, 600);
+        assert_eq!(position.entry_price, 100);
+        assert_eq!(position.high_price, 200);
+    });
+}
+
+#[test]
+fn test_fixed_stop_used_when_trailing_disabled() {
+    let env = setup_env();
+    let contract_id = env.register(AutoTradeContract, ());
+    let user = Address::generate(&env);
+
+    env.as_contract(&contract_id, || {
+        risk::set_risk_config(
+            &env,
+            &user,
+            &risk::RiskConfig {
+                max_position_pct: 20,
+                daily_trade_limit: 10,
+                stop_loss_pct: 15,
+                trailing_stop_enabled: false,
+                trailing_stop_pct: 1000,
+            },
+        );
+        risk::update_position(&env, &user, 1, 1_000, 100);
+        AutoTradeContract::process_price_update(env.clone(), user.clone(), 1, 200);
+
+        let result = AutoTradeContract::process_price_update(env.clone(), user.clone(), 1, 85)
+            .unwrap();
+        assert_eq!(result.execution_price, 85);
+
+        let events = env.events().all();
+        let expected_topics = (
+            Symbol::new(&env, "stop_loss_triggered"),
+            user.clone(),
+            1u32,
+        )
+            .into_val(&env);
+        assert!(events.iter().any(|event| event.1 == expected_topics));
+    });
+}
+
+#[test]
+fn test_trailing_stop_multiple_users_independent_configs() {
+    let env = setup_env();
+    let contract_id = env.register(AutoTradeContract, ());
+    let user_a = Address::generate(&env);
+    let user_b = Address::generate(&env);
+
+    env.as_contract(&contract_id, || {
+        risk::set_risk_config(
+            &env,
+            &user_a,
+            &risk::RiskConfig {
+                max_position_pct: 20,
+                daily_trade_limit: 10,
+                stop_loss_pct: 15,
+                trailing_stop_enabled: true,
+                trailing_stop_pct: 500,
+            },
+        );
+        risk::set_risk_config(
+            &env,
+            &user_b,
+            &risk::RiskConfig {
+                max_position_pct: 20,
+                daily_trade_limit: 10,
+                stop_loss_pct: 15,
+                trailing_stop_enabled: true,
+                trailing_stop_pct: 1500,
+            },
+        );
+        risk::update_position(&env, &user_a, 1, 1_000, 100);
+        risk::update_position(&env, &user_b, 1, 1_000, 100);
+
+        AutoTradeContract::process_price_update(env.clone(), user_a.clone(), 1, 200);
+        AutoTradeContract::process_price_update(env.clone(), user_b.clone(), 1, 200);
+
+        assert_eq!(
+            AutoTradeContract::get_trailing_stop_price(env.clone(), user_a.clone(), 1),
+            Some(190)
+        );
+        assert_eq!(
+            AutoTradeContract::get_trailing_stop_price(env.clone(), user_b.clone(), 1),
+            Some(170)
+        );
+    });
+}
+
+#[test]
 fn test_get_trade_history_paginated() {
     let env = setup_env();
     let contract_id = env.register(AutoTradeContract, ());
@@ -582,6 +794,8 @@ fn test_get_trade_history_paginated() {
                 max_position_pct: 100,
                 daily_trade_limit: 10,
                 stop_loss_pct: 15,
+                trailing_stop_enabled: false,
+                trailing_stop_pct: 1000,
             },
         );
         env.storage()

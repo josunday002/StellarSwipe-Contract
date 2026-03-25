@@ -1,10 +1,9 @@
 #![no_std]
 
-use soroban_sdk::{contract, contractimpl, contracttype, Address, Env, Symbol, String};
-
-use soroban_sdk::{contract, contractimpl, contracttype, Address, Env, Symbol, String, Vec};
+use soroban_sdk::{contract, contractimpl, contracttype, Address, Env, String, Symbol, Vec};
 
 mod admin;
+mod advanced_risk;
 mod auth;
 mod errors;
 mod history;
@@ -20,10 +19,11 @@ mod storage;
 mod strategies;
 
 use crate::storage::DataKey;
+use advanced_risk::AutoSellResult;
 use errors::AutoTradeError;
 use stellar_swipe_common::emergency::{CAT_TRADING, PauseState};
 
-use risk_parity::{AssetRisk, RebalanceTrade}; 
+use risk_parity::{AssetRisk, RebalanceTrade};
 
 pub use iceberg::{
     create_iceberg_order, cancel_iceberg_order, get_full_order_view, get_public_order_view,
@@ -385,6 +385,35 @@ impl AutoTradeContract {
     pub fn record_asset_price(env: Env, asset_id: u32, price: i128) {
         risk::record_price(&env, asset_id, price);
         risk::set_asset_price(&env, asset_id, price);
+    }
+
+    pub fn process_price_update(
+        env: Env,
+        user: Address,
+        asset_id: u32,
+        price: i128,
+    ) -> Option<AutoSellResult> {
+        let result = advanced_risk::process_price_update(&env, &user, asset_id, price);
+
+        if let Some(ref sell_result) = result {
+            let event_name = match sell_result.trigger {
+                advanced_risk::StopTrigger::TrailingStop => "trailing_stop_triggered",
+                advanced_risk::StopTrigger::FixedStopLoss => "stop_loss_triggered",
+            };
+
+            #[allow(deprecated)]
+            env.events().publish(
+                (Symbol::new(&env, event_name), user.clone(), asset_id),
+                sell_result.clone(),
+            );
+        }
+
+        result
+    }
+
+    pub fn get_trailing_stop_price(env: Env, user: Address, asset_id: u32) -> Option<i128> {
+        let config = risk::get_risk_config(&env, &user);
+        advanced_risk::get_trailing_stop_price(&env, &user, asset_id, &config)
     }
 
     /// Grant authorization to execute trades

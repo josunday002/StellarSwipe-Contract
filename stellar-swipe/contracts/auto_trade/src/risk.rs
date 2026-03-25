@@ -13,6 +13,8 @@ pub struct RiskConfig {
     pub max_position_pct: u32,  // Percentage (0-100)
     pub daily_trade_limit: u32, // Max trades per 24 hours
     pub stop_loss_pct: u32,     // Percentage (0-100)
+    pub trailing_stop_enabled: bool,
+    pub trailing_stop_pct: u32, // Basis points, e.g. 1000 = 10%
 }
 
 impl Default for RiskConfig {
@@ -21,6 +23,8 @@ impl Default for RiskConfig {
             max_position_pct: 20,  // 20% of portfolio
             daily_trade_limit: 10, // 10 trades per day
             stop_loss_pct: 15,     // 15% stop loss
+            trailing_stop_enabled: false,
+            trailing_stop_pct: 1000,
         }
     }
 }
@@ -51,6 +55,7 @@ pub struct Position {
     pub asset_id: u32,
     pub amount: i128,
     pub entry_price: i128,
+    pub high_price: i128,
     pub timestamp: u64,
 }
 
@@ -190,11 +195,35 @@ pub fn update_position(env: &Env, user: &Address, asset_id: u32, amount: i128, p
     if amount == 0 {
         positions.remove(asset_id);
     } else {
-        let position = Position {
-            asset_id,
-            amount,
-            entry_price: price,
-            timestamp: env.ledger().timestamp(),
+        let position = if let Some(existing) = positions.get(asset_id) {
+            let is_reduction = amount < existing.amount;
+            Position {
+                asset_id,
+                amount,
+                entry_price: if is_reduction {
+                    existing.entry_price
+                } else {
+                    price
+                },
+                high_price: if existing.high_price > price {
+                    existing.high_price
+                } else {
+                    price
+                },
+                timestamp: if is_reduction {
+                    existing.timestamp
+                } else {
+                    env.ledger().timestamp()
+                },
+            }
+        } else {
+            Position {
+                asset_id,
+                amount,
+                entry_price: price,
+                high_price: price,
+                timestamp: env.ledger().timestamp(),
+            }
         };
         positions.set(asset_id, position);
     }
@@ -410,6 +439,8 @@ mod tests {
             assert_eq!(config.max_position_pct, 20);
             assert_eq!(config.daily_trade_limit, 10);
             assert_eq!(config.stop_loss_pct, 15);
+            assert!(!config.trailing_stop_enabled);
+            assert_eq!(config.trailing_stop_pct, 1000);
         });
     }
 
@@ -424,6 +455,8 @@ mod tests {
                 max_position_pct: 30,
                 daily_trade_limit: 15,
                 stop_loss_pct: 10,
+                trailing_stop_enabled: true,
+                trailing_stop_pct: 1500,
             };
             set_risk_config(&env, &user, &custom_config);
 
