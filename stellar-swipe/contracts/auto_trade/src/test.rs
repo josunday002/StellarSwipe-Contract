@@ -1127,3 +1127,257 @@ mod referral_tests {
         });
     }
 }
+
+// ========================================
+// Portfolio Insurance & Dynamic Hedging Tests (Issue #89)
+// ========================================
+
+#[cfg(test)]
+mod insurance_tests {
+    use super::*;
+    use crate::risk;
+    use crate::storage;
+    use soroban_sdk::{
+        testutils::{Address as _, Ledger as _},
+        Env,
+    };
+
+    fn setup_env() -> Env {
+        let env = Env::default();
+        env.mock_all_auths();
+        env.ledger().set_timestamp(1_000);
+        env
+    }
+
+    /// Validation scenario from the issue:
+    /// Portfolio = 10_000, trigger = 15% drawdown, hedge ratio = 50%.
+    /// Simulate 20% decline → hedges open at 15% → size ~50% → recover → hedges close.
+    #[test]
+    fn test_full_insurance_lifecycle() {
+        let env = setup_env();
+        let contract_id = env.register(AutoTradeContract, ());
+        let user = Address::generate(&env);
+
+        env.as_contract(&contract_id, || {
+            // ── 1. Configure insurance: 15% trigger (1500 bps), 50% ratio (5000 bps) ──
+            AutoTradeContract::configure_insurance(
+                env.clone(),
+                user.clone(),
+                true,
+                1500,
+                5000,
+                200,
+            )
+            .unwrap();
+
+            // ── 2. Establish portfolio at 10_000 value ──
+            // price=100, amount=10_000 → value = 10_000 * 100 / 100 = 10_000
+            risk::set_asset_price(&env, 1, 100);
+            risk::update_position(&env, &user, 1, 10_000, 100);
+
+            // Seed HWM by calling drawdown once
+            let dd = AutoTradeContract::get_portfolio_drawdown(env.clone(), user.clone()).unwrap();
+            assert_eq!(dd, 0);
+
+            let ins = AutoTradeContract::get_insurance_config(env.clone(), user.clone()).unwrap();
+            assert_eq!(ins.portfolio_high_water_mark, 10_000);
+
+            // ── 3. Simulate 20% decline (price 80 → value 8_000) ──
+            risk::set_asset_price(&env, 1, 80);
+
+            let dd = AutoTradeContract::get_portfolio_drawdown(env.clone(), user.clone()).unwrap();
+            // (10_000 - 8_000) * 10_000 / 10_000 = 2_000 bps = 20%
+            assert_eq!(dd, 2_000);
+
+            // ── 4. Verify hedges created at 15% drawdown threshold ──
+            let ids =
+                AutoTradeContract::apply_hedge_if_needed(env.clone(), user.clone()).unwrap();
+            assert!(ids.len() > 0, "hedges must be created when drawdown > threshold");
+
+            let ins = AutoTradeContract::get_insurance_config(env.clone(), user.clone()).unwrap();
+            assert!(!ins.active_hedges.is_empty());
+
+            // ── 5. Verify hedge size ≈ 50% of portfolio ──
+            let hedge = ins.active_hedges.get(0).unwrap();
+            // current_value = 8_000, target_hedge_value = 8_000 * 5000 / 10_000 = 4_000
+            // amount = 4_000 * 100 / 80 = 5_000
+            assert_eq!(hedge.amount, 5_000);
+
+            // ── 6. Simulate recovery (price back to 99 → drawdown < 5%) ──
+            risk::set_asset_price(&env, 1, 99);
+
+            let dd = AutoTradeContract::get_portfolio_drawdown(env.clone(), user.clone()).unwrap();
+            // (10_000 - 9_900) * 10_000 / 10_000 = 100 bps = 1% < 500 bps
+            assert!(dd < 500);
+
+            // ── 7. Verify hedges removed ──
+            let removed =
+                AutoTradeContract::remove_hedges_if_recovered(env.clone(), user.clone())
+                    .unwrap();
+            assert!(removed.len() > 0, "hedges must be removed on recovery");
+
+            let ins = AutoTradeContract::get_insurance_config(env.clone(), user.clone()).unwrap();
+            assert!(ins.active_hedges.is_empty());
+        });
+    }
+
+    #[test]
+    fn test_insurance_configure_and_query() {
+        let env = setup_env();
+        let contract_id = env.register(AutoTradeContract, ());
+        let user = Address::generate(&env);
+
+        env.as_contract(&contract_id, || {
+            AutoTradeContract::configure_insurance(
+                env.clone(),
+                user.clone(),
+                true,
+                2000,
+                3000,
+                500,
+            )
+            .unwrap();
+
+            let ins = AutoTradeContract::get_insurance_config(env.clone(), user.clone()).unwrap();
+            assert!(ins.enabled);
+            assert_eq!(ins.max_drawdown_bps, 2000);
+            assert_eq!(ins.hedge_ratio_bps, 3000);
+            assert_eq!(ins.rebalance_threshold_bps, 500);
+        });
+    }
+
+    #[test]
+    fn test_hedge_not_triggered_below_threshold() {
+        let env = setup_env();
+        let contract_id = env.register(AutoTradeContract, ());
+        let user = Address::generate(&env);
+
+        env.as_contract(&contract_id, || {
+            AutoTradeContract::configure_insurance(
+                env.clone(),
+                user.clone(),
+                true,
+                1500,
+                5000,
+                200,
+            )
+            .unwrap();
+
+            risk::set_asset_price(&env, 1, 100);
+            risk::update_position(&env, &user, 1, 10_000, 100);
+            AutoTradeContract::get_portfolio_drawdown(env.clone(), user.clone()).unwrap();
+
+            // Only 10% drop — below 15% threshold
+            risk::set_asset_price(&env, 1, 90);
+
+            let ids =
+                AutoTradeContract::apply_hedge_if_needed(env.clone(), user.clone()).unwrap();
+            assert_eq!(ids.len(), 0);
+        });
+    }
+
+    #[test]
+    fn test_disabled_insurance_no_hedge() {
+        let env = setup_env();
+        let contract_id = env.register(AutoTradeContract, ());
+        let user = Address::generate(&env);
+
+        env.as_contract(&contract_id, || {
+            AutoTradeContract::configure_insurance(
+                env.clone(),
+                user.clone(),
+                false, // disabled
+                1500,
+                5000,
+                200,
+            )
+            .unwrap();
+
+            risk::set_asset_price(&env, 1, 100);
+            risk::update_position(&env, &user, 1, 10_000, 100);
+            AutoTradeContract::get_portfolio_drawdown(env.clone(), user.clone()).unwrap();
+            risk::set_asset_price(&env, 1, 80);
+
+            let ids =
+                AutoTradeContract::apply_hedge_if_needed(env.clone(), user.clone()).unwrap();
+            assert_eq!(ids.len(), 0);
+        });
+    }
+
+    #[test]
+    fn test_rebalance_increases_hedge_on_portfolio_growth() {
+        let env = setup_env();
+        let contract_id = env.register(AutoTradeContract, ());
+        let user = Address::generate(&env);
+
+        env.as_contract(&contract_id, || {
+            AutoTradeContract::configure_insurance(
+                env.clone(),
+                user.clone(),
+                true,
+                1500,
+                5000,
+                200,
+            )
+            .unwrap();
+
+            risk::set_asset_price(&env, 1, 100);
+            risk::update_position(&env, &user, 1, 10_000, 100);
+            AutoTradeContract::get_portfolio_drawdown(env.clone(), user.clone()).unwrap();
+            risk::set_asset_price(&env, 1, 80);
+            AutoTradeContract::apply_hedge_if_needed(env.clone(), user.clone()).unwrap();
+
+            // Portfolio doubles in size
+            risk::update_position(&env, &user, 1, 20_000, 80);
+
+            let ids = AutoTradeContract::rebalance_hedges(env.clone(), user.clone()).unwrap();
+            assert!(ids.len() > 0, "rebalance should add hedges when portfolio grows");
+        });
+    }
+
+    #[test]
+    fn test_no_hedge_without_insurance_config() {
+        let env = setup_env();
+        let contract_id = env.register(AutoTradeContract, ());
+        let user = Address::generate(&env);
+
+        env.as_contract(&contract_id, || {
+            let err =
+                AutoTradeContract::apply_hedge_if_needed(env.clone(), user.clone()).unwrap_err();
+            assert_eq!(err, AutoTradeError::InsuranceNotConfigured);
+        });
+    }
+
+    #[test]
+    fn test_invalid_config_rejected() {
+        let env = setup_env();
+        let contract_id = env.register(AutoTradeContract, ());
+        let user = Address::generate(&env);
+
+        env.as_contract(&contract_id, || {
+            // Zero drawdown threshold is invalid
+            let err = AutoTradeContract::configure_insurance(
+                env.clone(),
+                user.clone(),
+                true,
+                0,
+                5000,
+                200,
+            )
+            .unwrap_err();
+            assert_eq!(err, AutoTradeError::InvalidInsuranceConfig);
+
+            // Zero hedge ratio is invalid
+            let err = AutoTradeContract::configure_insurance(
+                env.clone(),
+                user.clone(),
+                true,
+                1500,
+                0,
+                200,
+            )
+            .unwrap_err();
+            assert_eq!(err, AutoTradeError::InvalidInsuranceConfig);
+        });
+    }
+}

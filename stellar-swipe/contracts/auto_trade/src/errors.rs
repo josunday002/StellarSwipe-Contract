@@ -18,4 +18,7 @@ pub enum AutoTradeError {
     ReferralAlreadySet = 11,
     CircularReferral = 12,
     ReferralLimitExceeded = 13,
+    // Portfolio insurance errors
+    InsuranceNotConfigured = 14,
+    InvalidInsuranceConfig = 15,
 }

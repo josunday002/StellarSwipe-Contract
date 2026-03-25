@@ -7,6 +7,7 @@ mod errors;
 mod history;
 mod multi_asset;
 mod portfolio;
+mod portfolio_insurance;
 mod referral;
 mod risk;
 mod sdex;
@@ -320,6 +321,68 @@ impl AutoTradeContract {
         referee: Address,
     ) -> Option<referral::ReferralEntry> {
         referral::get_referral_entry(&env, &referee)
+    }
+
+    // ── Portfolio Insurance public API ────────────────────────────────────────
+
+    /// Configure portfolio insurance for the calling user.
+    pub fn configure_insurance(
+        env: Env,
+        user: Address,
+        enabled: bool,
+        max_drawdown_bps: u32,
+        hedge_ratio_bps: u32,
+        rebalance_threshold_bps: u32,
+    ) -> Result<(), AutoTradeError> {
+        user.require_auth();
+        portfolio_insurance::configure_insurance(
+            &env,
+            &user,
+            enabled,
+            max_drawdown_bps,
+            hedge_ratio_bps,
+            rebalance_threshold_bps,
+        )
+    }
+
+    /// Return current drawdown in basis points and update the high-water mark.
+    pub fn get_portfolio_drawdown(env: Env, user: Address) -> Result<i128, AutoTradeError> {
+        portfolio_insurance::calculate_drawdown(&env, &user)
+    }
+
+    /// Check drawdown and open hedge positions if the threshold is breached.
+    pub fn apply_hedge_if_needed(
+        env: Env,
+        user: Address,
+    ) -> Result<soroban_sdk::Vec<u32>, AutoTradeError> {
+        user.require_auth();
+        portfolio_insurance::check_and_apply_hedge(&env, &user)
+    }
+
+    /// Rebalance existing hedges to match the current portfolio size.
+    pub fn rebalance_hedges(
+        env: Env,
+        user: Address,
+    ) -> Result<soroban_sdk::Vec<u32>, AutoTradeError> {
+        user.require_auth();
+        portfolio_insurance::rebalance_hedges(&env, &user)
+    }
+
+    /// Close all hedges when the portfolio has recovered (drawdown < 5%).
+    pub fn remove_hedges_if_recovered(
+        env: Env,
+        user: Address,
+    ) -> Result<soroban_sdk::Vec<u32>, AutoTradeError> {
+        user.require_auth();
+        portfolio_insurance::remove_hedges_if_recovered(&env, &user)
+    }
+
+    /// Get the current insurance configuration for a user.
+    pub fn get_insurance_config(
+        env: Env,
+        user: Address,
+    ) -> Option<portfolio_insurance::PortfolioInsurance> {
+        portfolio_insurance::get_insurance(&env, &user)
     }
 }
 
