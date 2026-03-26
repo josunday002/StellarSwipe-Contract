@@ -436,7 +436,11 @@ impl AutoTradeContract {
         auth::get_auth_config(&env, &user)
     }
 
+ feature/mean-reversion-strategy
 feature/mean-reversion-strategy
+
+ feature/dca-strategy
+ main
     // ── DCA ──────────────────────────────────────────────────────────────────
 
     pub fn create_dca(
@@ -496,6 +500,7 @@ feature/mean-reversion-strategy
         strategy_id: u64,
     ) -> Result<strategies::dca::DCAPerformance, AutoTradeError> {
         strategies::dca::analyze_dca_performance(&env, strategy_id)
+ feature/mean-reversion-strategy
     }
 
     // ── Mean Reversion ────────────────────────────────────────────────────────
@@ -571,7 +576,9 @@ feature/mean-reversion-strategy
     ) -> Result<(), AutoTradeError> {
         user.require_auth();
         strategies::mean_reversion::enable_mean_reversion_strategy(&env, strategy_id)
-=======
+
+ main
+
     pub fn set_stat_arb_price_history(
         env: Env,
         asset_id: u32,

@@ -1121,6 +1121,10 @@ fn test_authorization_at_exact_limit() {
 }
 
  feature/mean-reversion-strategy
+ feature/mean-reversion-strategy
+
+ feature/dca-strategy
+ main
 // ========================================
 // DCA Strategy Tests
 // ========================================
@@ -1130,7 +1134,7 @@ mod dca_tests {
     use crate::strategies::dca::*;
     use soroban_sdk::{
         symbol_short,
-=======
+
 #[test]
 fn test_stat_arb_trade_creates_active_portfolio_state_correctly() {
     let env = setup_env();
@@ -1298,7 +1302,28 @@ mod insurance_tests {
         testutils::{Address as _, Ledger as _},
         Env,
     };
+ feature/dca-strategy
+    fn setup() -> (Env, soroban_sdk::Address) {
+        let env = Env::default();
+        env.mock_all_auths();
+        env.ledger().set_timestamp(1_000);
+        let user = soroban_sdk::Address::generate(&env);
+        (env, user)
+    }
 
+    fn set_price(env: &Env, asset: u32, price: i128) {
+        env.storage()
+            .temporary()
+            .set(&(symbol_short!("price"), asset), &price);
+    }
+
+    fn set_balance(env: &Env, user: &soroban_sdk::Address, bal: i128) {
+        env.storage()
+            .temporary()
+            .set(&(user.clone(), symbol_short!("balance")), &bal);
+    }
+
+ feature/mean-reversion-strategy
  feature/mean-reversion-strategy
     fn setup() -> (Env, soroban_sdk::Address) {
         let env = Env::default();
@@ -1320,6 +1345,8 @@ mod insurance_tests {
             .set(&(user.clone(), symbol_short!("balance")), &bal);
     }
 
+
+ main
     #[test]
     fn test_create_dca_strategy() {
         let (env, user) = setup();
@@ -1440,7 +1467,7 @@ mod insurance_tests {
 
             let s = get_dca_strategy(&env, id).unwrap();
             assert_eq!(s.purchases.len(), 2);
-=======
+
     fn setup_env() -> Env {
         let env = Env::default();
         env.mock_all_auths();
@@ -1523,6 +1550,9 @@ mod insurance_tests {
 
     #[test]
  feature/mean-reversion-strategy
+ feature/mean-reversion-strategy
+ feature/dca-strategy
+ main
     fn test_analyze_performance() {
         let (env, user) = setup();
         let contract = env.register(crate::AutoTradeContract, ());
@@ -1537,7 +1567,7 @@ mod insurance_tests {
             assert_eq!(perf.total_invested, 100);
             assert_eq!(perf.total_purchases, 1);
             assert_eq!(perf.current_price, 100);
-=======
+
     fn test_insurance_configure_and_query() {
         let env = setup_env();
         let contract_id = env.register(AutoTradeContract, ());
@@ -1565,6 +1595,10 @@ mod insurance_tests {
 
     #[test]
  feature/mean-reversion-strategy
+ feature/mean-reversion-strategy
+
+ feature/dca-strategy
+ main
     fn test_end_time_stops_purchases() {
         let (env, user) = setup();
         let contract = env.register(crate::AutoTradeContract, ());
@@ -1579,7 +1613,7 @@ mod insurance_tests {
             // Advance past end_time
             env.ledger().set_timestamp(1_000 + 86_400 + 1);
             assert!(!is_purchase_due(&env, id).unwrap());
-=======
+
     fn test_hedge_not_triggered_below_threshold() {
         let env = setup_env();
         let contract_id = env.register(AutoTradeContract, ());
@@ -1612,6 +1646,10 @@ mod insurance_tests {
 
     #[test]
  feature/mean-reversion-strategy
+ feature/mean-reversion-strategy
+
+ feature/dca-strategy
+ main
     fn test_insufficient_balance_pauses_strategy() {
         let (env, user) = setup();
         let contract = env.register(crate::AutoTradeContract, ());
@@ -1624,7 +1662,7 @@ mod insurance_tests {
             assert_eq!(err, crate::errors::AutoTradeError::InsufficientBalance);
             let s = get_dca_strategy(&env, id).unwrap();
             assert_eq!(s.status, DCAStatus::Paused);
-=======
+
     fn test_disabled_insurance_no_hedge() {
         let env = setup_env();
         let contract_id = env.register(AutoTradeContract, ());
@@ -1649,12 +1687,20 @@ mod insurance_tests {
             let ids =
                 AutoTradeContract::apply_hedge_if_needed(env.clone(), user.clone()).unwrap();
             assert_eq!(ids.len(), 0);
+ feature/mean-reversion-strategy
 main
+
+ main
+ main
         });
     }
 
     #[test]
  feature/mean-reversion-strategy
+ feature/mean-reversion-strategy
+
+ feature/dca-strategy
+ main
     fn test_update_dca_schedule() {
         let (env, user) = setup();
         let contract = env.register(crate::AutoTradeContract, ());
@@ -1665,7 +1711,7 @@ main
             let s = get_dca_strategy(&env, id).unwrap();
             assert_eq!(s.purchase_amount, 50);
             assert_eq!(s.frequency, DCAFrequency::Weekly);
-=======
+
     fn test_rebalance_increases_hedge_on_portfolio_growth() {
         let env = setup_env();
         let contract_id = env.register(AutoTradeContract, ());
@@ -1699,6 +1745,10 @@ main
 
     #[test]
  feature/mean-reversion-strategy
+ feature/mean-reversion-strategy
+
+ feature/dca-strategy
+ main
     fn test_handle_missed_purchases() {
         let (env, user) = setup();
         let contract = env.register(crate::AutoTradeContract, ());
@@ -1714,7 +1764,7 @@ main
             assert_eq!(missed, 3);
             let s = get_dca_strategy(&env, id).unwrap();
             assert_eq!(s.purchases.len(), 3);
-=======
+
     fn test_no_hedge_without_insurance_config() {
         let env = setup_env();
         let contract_id = env.register(AutoTradeContract, ());
@@ -1730,6 +1780,10 @@ main
 
     #[test]
  feature/mean-reversion-strategy
+ feature/mean-reversion-strategy
+
+ feature/dca-strategy
+ main
     fn test_custom_frequency() {
         let (env, user) = setup();
         let contract = env.register(crate::AutoTradeContract, ());
