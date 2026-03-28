@@ -178,6 +178,18 @@ impl SignalRegistry {
         admin::transfer_admin(&env, &caller, new_admin)
     }
 
+    pub fn set_guardian(env: Env, caller: Address, guardian: Address) -> Result<(), AdminError> {
+        admin::set_guardian(&env, &caller, guardian)
+    }
+
+    pub fn revoke_guardian(env: Env, caller: Address) -> Result<(), AdminError> {
+        admin::revoke_guardian(&env, &caller)
+    }
+
+    pub fn get_guardian(env: Env) -> Option<Address> {
+        admin::get_guardian(&env)
+    }
+
     pub fn get_admin(env: Env) -> Result<Address, AdminError> {
         get_admin(&env)
     }

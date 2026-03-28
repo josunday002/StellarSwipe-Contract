@@ -84,6 +84,12 @@ Correlation-Based-Risk
     ConditionalOrderNotTriggered = 46,
     InvalidConditionalConfig = 47,
 
+    // Oracle circuit breaker
+    OracleUnavailable = 48,
+
+    // Oracle whitelist
+    LastOracleForPair = 49,
+
  main
  main
 main
