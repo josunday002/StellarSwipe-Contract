@@ -1,7 +1,26 @@
 #![no_std]
 
+feat/bridge-liquidity-pools-96
 use soroban_sdk::{
     contract, contracterror, contractimpl, contracttype, Address, Env, String, Symbol, Vec,
+
+use soroban_sdk::{contract, contractimpl, Env};
+use stellar_swipe_common::HealthStatus;
+
+pub mod monitoring;
+pub mod governance;
+pub mod analytics;
+pub mod fees;
+pub mod messaging;
+
+pub use monitoring::{
+    ChainFinalityConfig, ChainId, MonitoredTransaction, MonitoringStatus, VerificationMethod,
+    BridgeTransfer, TransferStatus,
+    monitor_source_transaction, get_monitored_tx, check_for_reorg, handle_reorg,
+    update_transaction_confirmation_count, mark_transaction_failed, create_bridge_transfer,
+    add_validator_signature, approve_transfer_for_minting, complete_transfer,
+    get_chain_finality_config, set_chain_finality_config,
+main
 };
 
 mod liquidity;
@@ -12,6 +31,7 @@ pub use validators::{ValidatorApproval, ValidatorApprovalKind, ValidatorSet};
 
 const DAY_SECONDS: u64 = 86_400;
 
+feat/bridge-liquidity-pools-96
 #[contracterror]
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 #[repr(u32)]
@@ -122,11 +142,27 @@ pub enum DataKey {
     DailyVolume,
 }
 
+pub use messaging::{
+    CrossChainMessage, MessageStatus,
+    MAX_MESSAGE_SIZE, MESSAGE_TIMEOUT,
+    register_bridge_for_chain,
+    send_cross_chain_message,
+    relay_message_to_target_chain,
+    confirm_message_delivery,
+    receive_message_callback,
+    mark_message_failed,
+    retry_failed_message,
+    expire_timed_out_message,
+    get_cross_chain_message,
+};
+ main
+
 #[contract]
 pub struct BridgeContract;
 
 #[contractimpl]
 impl BridgeContract {
+feat/bridge-liquidity-pools-96
     pub fn initialize(
         env: Env,
         admin: Address,
@@ -936,3 +972,13 @@ mod test {
         });
     }
 }
+
+    /// Read-only health for ops / frontends; no auth, no storage writes.
+    pub fn health_check(env: Env) -> HealthStatus {
+        crate::governance::bridge_health_check(&env)
+    }
+}
+
+#[cfg(test)]
+mod test_health;
+ main

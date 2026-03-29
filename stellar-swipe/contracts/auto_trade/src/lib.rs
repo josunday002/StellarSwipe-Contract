@@ -17,6 +17,7 @@ mod portfolio_insurance;
 mod positions;
 mod rate_limit;
 mod referral;
+mod rate_limit;
 mod risk;
 mod risk_parity;
 mod sdex;
@@ -24,10 +25,21 @@ mod storage;
 mod strategies;
 mod twap;
 
+pub use errors::AutoTradeError;
+pub use risk::RiskConfig;
+
+#[cfg(feature = "testutils")]
+pub use storage::{set_signal, Signal};
+
 use crate::storage::DataKey;
 use advanced_risk::AutoSellResult;
-use errors::AutoTradeError;
+ feat/batch-copy-trade
 use stellar_swipe_common::emergency::{CAT_TRADING, PauseState};
+
+use errors::AutoTradeError;
+use stellar_swipe_common::emergency::{CAT_ALL, CAT_TRADING, PauseState};
+use stellar_swipe_common::{health_uninitialized, HealthStatus};
+ main
 
 use risk_parity::{AssetRisk, RebalanceTrade};
 
