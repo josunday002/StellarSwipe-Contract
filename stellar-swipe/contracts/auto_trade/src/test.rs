@@ -1929,7 +1929,6 @@ feat/smart-order-routing-84
             env.ledger().set_timestamp(1_000 + 86_400 + 1);
             assert!(!is_purchase_due(&env, id).unwrap());
 
- main
     fn test_hedge_not_triggered_below_threshold() {
         let env = setup_env();
         let contract_id = env.register(AutoTradeContract, ());
@@ -2046,7 +2045,6 @@ feat/smart-order-routing-84
             );
 
             assert!(ids.len() > 0, "rebalance should add hedges when portfolio grows");
- main
         });
     }
 

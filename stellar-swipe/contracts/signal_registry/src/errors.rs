@@ -23,8 +23,8 @@ pub enum AdminError {
     ScheduleNotFound = 19,
     NotScheduleOwner = 20,
     CircuitBreakerTriggered = 21,
-    NoPendingAdminTransfer = 22,
-    AdminTransferExpired = 23,
+    PendingAdminNotFound = 22,
+    PendingAdminExpired = 23,
 }
 
 #[contracterror]
