@@ -5,14 +5,14 @@ pub fn emit_admin_transfer_proposed(
     env: &Env,
     current_admin: Address,
     pending_admin: Address,
-    expires_at_ledger: u32,
+    expires_at: u64,
 ) {
     let topics = (
         Symbol::new(env, "admin_transfer_proposed"),
         current_admin,
         pending_admin,
     );
-    env.events().publish(topics, expires_at_ledger);
+    env.events().publish(topics, expires_at);
 }
 
 pub fn emit_admin_transfer_completed(env: &Env, old_admin: Address, new_admin: Address) {
@@ -335,14 +335,4 @@ pub fn emit_reputation_updated(env: &Env, provider: Address, old_score: u32, new
             new_score,
         },
     );
-}
-
-pub fn emit_admin_transfer_proposed(env: &Env, current_admin: Address, new_admin: Address, expires_at: u64) {
-    let topics = (Symbol::new(env, "admin_transfer_proposed"), current_admin, new_admin);
-    env.events().publish(topics, expires_at);
-}
-
-pub fn emit_admin_transfer_completed(env: &Env, old_admin: Address, new_admin: Address) {
-    let topics = (Symbol::new(env, "admin_transfer_completed"), old_admin, new_admin);
-    env.events().publish(topics, ());
 }

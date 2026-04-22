@@ -4,9 +4,12 @@
 
 mod queries;
 mod storage;
+mod subscriptions;
 
 use soroban_sdk::{contract, contractimpl, contracttype, Address, Env, Vec};
 use storage::DataKey;
+
+pub use subscriptions::SubscriptionError;
 
 /// Aggregated P&L for display. When the oracle cannot supply a price and there are open
 /// positions, `unrealized_pnl` is `None` and `total_pnl` equals `realized_pnl` only.
@@ -132,6 +135,31 @@ impl UserPortfolio {
     /// Portfolio P&L including open positions when oracle price is available.
     pub fn get_pnl(env: Env, user: Address) -> PnlSummary {
         queries::compute_get_pnl(&env, user)
+    }
+
+    /// Provider sets per-day fee token + amount for their premium feed (XLM or USDC, etc.).
+    pub fn set_provider_subscription_terms(
+        env: Env,
+        provider: Address,
+        fee_token: Address,
+        fee_per_day: i128,
+    ) -> Result<(), SubscriptionError> {
+        subscriptions::set_provider_subscription_terms(&env, &provider, fee_token, fee_per_day)
+    }
+
+    /// Pay the provider-configured fee and extend on-chain subscription through `duration_days`.
+    pub fn subscribe_to_provider(
+        env: Env,
+        user: Address,
+        provider: Address,
+        duration_days: u32,
+    ) -> Result<(), SubscriptionError> {
+        subscriptions::subscribe_to_provider(&env, &user, &provider, duration_days)
+    }
+
+    /// Used by SignalRegistry (cross-contract) to gate PREMIUM signal visibility.
+    pub fn check_subscription(env: Env, user: Address, provider: Address) -> bool {
+        subscriptions::check_subscription(&env, &user, &provider)
     }
 
     fn require_admin(env: &Env) {

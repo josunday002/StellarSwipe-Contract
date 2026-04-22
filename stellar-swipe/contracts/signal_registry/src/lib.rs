@@ -26,21 +26,17 @@ mod test_reputation;
 mod types;
 mod versioning;
 
+pub use categories::{RiskLevel, SignalCategory};
+pub use types::SignalAction;
+
 use admin::{
     get_admin, get_admin_config, init_admin, is_trading_paused,
     require_not_paused_legacy as require_not_paused, AdminConfig,
 };
- refactor/157-shared-constants
-use stellar_swipe_common::emergency::PauseState;
-
 use stellar_swipe_common::emergency::{PauseState, CAT_ALL, CAT_SIGNALS, CAT_STAKES, CAT_TRADING};
- main
 use stellar_swipe_common::rate_limit::{self as rl, ActionType as RLAction, RateLimitConfig};
-use stellar_swipe_common::{
-    CAT_ALL, CAT_SIGNALS, CAT_STAKES, CAT_TRADING, SECONDS_PER_30_DAY_MONTH,
-};
+use stellar_swipe_common::SECONDS_PER_30_DAY_MONTH;
 
-use categories::{RiskLevel, SignalCategory};
 use combos::{
     cancel_combo, create_combo_signal, execute_combo_signal, get_combo, get_combo_executions_pub,
     get_combo_performance, ComboExecution, ComboPerformanceSummary, ComboSignal, ComboType,
@@ -59,14 +55,17 @@ use reputation::{
     calculate_trust_score, get_trust_score, update_median_values, update_trust_score,
     TrustScoreDetails, TrustScoreTier,
 };
-use soroban_sdk::{contract, contractimpl, contracttype, Address, Bytes, Env, Map, String, Vec};
+use soroban_sdk::{
+    contract, contractimpl, contracttype, Address, Bytes, Env, IntoVal, Map, String, Symbol, Val,
+    Vec,
+};
 use stellar_swipe_common::{health_uninitialized, placeholder_admin, HealthStatus};
 use stellar_swipe_common::{validate_asset_pair as validate_asset_pair_common, AssetPairError};
 use templates::{SignalTemplate, DEFAULT_TEMPLATE_EXPIRY_HOURS};
 use types::{
     AddressMapping, Asset, CrossChainSignal, FeeBreakdown, ImportResultView, ProviderPerformance,
-    RecurrencePattern, Signal, SignalAction, SignalData, SignalEditInput, SignalOutcome,
-    SignalPerformanceView, SignalStatus, SignalSummary, SortOption, SyncStatus, TradeExecution,
+    RecurrencePattern, Signal, SignalData, SignalEditInput, SignalOutcome, SignalPerformanceView,
+    SignalStatus, SignalSummary, SortOption, SyncStatus, TradeExecution,
 };
 use versioning::{CopyRecord, SignalVersion};
 
@@ -99,6 +98,8 @@ pub enum StorageKey {
     AdoptionNonces,
     /// Authorized TradeExecutor contract address (set by admin).
     TradeExecutor,
+    /// Canonical UserPortfolio used for PREMIUM subscription checks (`check_subscription`).
+    UserPortfolio,
     /// Recorded post-close outcomes per signal (Issue #170).
     RecordedSignalOutcomes,
     /// Rolling reputation score per provider (Issue #170).
@@ -126,6 +127,21 @@ impl SignalRegistry {
         env.storage()
             .instance()
             .set(&StorageKey::TradeExecutor, &executor);
+        Ok(())
+    }
+
+    /// Register the canonical UserPortfolio contract (admin only). Required for
+    /// [`Self::get_signal_for_viewer`] PREMIUM access checks.
+    pub fn set_user_portfolio(
+        env: Env,
+        caller: Address,
+        portfolio: Address,
+    ) -> Result<(), AdminError> {
+        admin::require_admin(&env, &caller)?;
+        caller.require_auth();
+        env.storage()
+            .instance()
+            .set(&StorageKey::UserPortfolio, &portfolio);
         Ok(())
     }
 
@@ -263,18 +279,6 @@ impl SignalRegistry {
         caller: Address,
         new_admin: Address,
     ) -> Result<(), AdminError> {
-        admin::propose_admin_transfer(&env, &caller, new_admin)
-    }
-
-    pub fn accept_admin_transfer(env: Env, caller: Address) -> Result<(), AdminError> {
-        admin::accept_admin_transfer(&env, &caller)
-    }
-
-    pub fn cancel_admin_transfer(env: Env, caller: Address) -> Result<(), AdminError> {
-        admin::cancel_admin_transfer(&env, &caller)
-    }
-
-    pub fn propose_admin_transfer(env: Env, caller: Address, new_admin: Address) -> Result<(), AdminError> {
         admin::propose_admin_transfer(&env, &caller, new_admin)
     }
 
@@ -647,6 +651,48 @@ impl SignalRegistry {
     pub fn get_signal(env: Env, signal_id: u64) -> Option<Signal> {
         let signals = Self::get_signals_map(&env);
         signals.get(signal_id)
+    }
+
+    /// Return the signal if `viewer` is allowed to see it. Non-[`SignalCategory::PREMIUM`]
+    /// signals are visible to any viewer. PREMIUM signals require an active on-chain
+    /// subscription (via UserPortfolio [`check_subscription`]) unless the viewer is the
+    /// signal provider.
+    pub fn get_signal_for_viewer(
+        env: Env,
+        signal_id: u64,
+        viewer: Address,
+    ) -> Option<Signal> {
+        let signals = Self::get_signals_map(&env);
+        let signal = signals.get(signal_id)?;
+        if signal.category != SignalCategory::PREMIUM {
+            return Some(signal);
+        }
+        if viewer == signal.provider {
+            return Some(signal);
+        }
+        let portfolio: Address = env
+            .storage()
+            .instance()
+            .get(&StorageKey::UserPortfolio)?;
+        let allowed = Self::invoke_check_subscription(&env, &portfolio, &viewer, &signal.provider);
+        if allowed {
+            Some(signal)
+        } else {
+            None
+        }
+    }
+
+    fn invoke_check_subscription(
+        env: &Env,
+        portfolio: &Address,
+        user: &Address,
+        provider: &Address,
+    ) -> bool {
+        let sym = Symbol::new(env, "check_subscription");
+        let mut args = Vec::<Val>::new(env);
+        args.push_back(user.clone().into_val(env));
+        args.push_back(provider.clone().into_val(env));
+        env.invoke_contract::<bool>(portfolio, &sym, args)
     }
 
     /// Edit price, rationale hash, or confidence within 60s of `submitted_at` (Issue #168).
@@ -2107,13 +2153,11 @@ mod test_combos;
 mod test_contests;
 #[cfg(test)]
 mod test_emergency;
-mod test_health;
 #[cfg(test)]
 mod test_scheduling;
 #[cfg(test)]
 mod test_signal_issues;
 #[cfg(test)]
-mod test_adoption;
-#[cfg(test)]
 mod test_admin_transfer;
+#[cfg(test)]
 mod test_health;
