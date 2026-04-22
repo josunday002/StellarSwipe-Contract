@@ -1,4 +1,4 @@
-use crate::types::Asset;
+use crate::types::{Asset, MigrationProgress};
 use soroban_sdk::{contracttype, Address, Env, String, Symbol, Vec};
 
 pub fn emit_admin_transfer_proposed(
@@ -337,12 +337,7 @@ pub fn emit_reputation_updated(env: &Env, provider: Address, old_score: u32, new
     );
 }
 
-pub fn emit_admin_transfer_proposed(env: &Env, current_admin: Address, new_admin: Address, expires_at: u64) {
-    let topics = (Symbol::new(env, "admin_transfer_proposed"), current_admin, new_admin);
-    env.events().publish(topics, expires_at);
-}
-
-pub fn emit_admin_transfer_completed(env: &Env, old_admin: Address, new_admin: Address) {
-    let topics = (Symbol::new(env, "admin_transfer_completed"), old_admin, new_admin);
-    env.events().publish(topics, ());
+pub fn emit_migration_progress(env: &Env, progress: MigrationProgress) {
+    let topics = (Symbol::new(env, "migration_progress"),);
+    env.events().publish(topics, progress);
 }
