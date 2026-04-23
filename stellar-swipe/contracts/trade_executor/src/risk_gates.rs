@@ -44,7 +44,10 @@ pub fn check_user_balance(
     if available >= required {
         Ok(())
     } else {
-        Err(InsufficientBalanceDetail { required, available })
+        Err(InsufficientBalanceDetail {
+            required,
+            available,
+        })
     }
 }
 
@@ -80,6 +83,9 @@ pub fn validate_and_record_position(
     args.push_back(max_positions.into_val(env));
 
     // try_invoke_contract returns Err when the callee panics (cap exceeded).
-    let result: Result<u32, _> = env.try_invoke_contract(user_portfolio, &sym, args);
-    result.map(|_| ()).map_err(|_| ContractError::PositionLimitReached)
+    let result = env.try_invoke_contract::<u32, soroban_sdk::Error>(user_portfolio, &sym, args);
+    result
+        .map_err(|_| ContractError::PositionLimitReached)?
+        .map(|_| ())
+        .map_err(|_| ContractError::PositionLimitReached)
 }

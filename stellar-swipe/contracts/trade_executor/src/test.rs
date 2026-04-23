@@ -7,11 +7,10 @@ use crate::{
     TradeExecutorContract, TradeExecutorContractClient,
 };
 use soroban_sdk::{
-    contract, contractimpl, contracttype,
-    symbol_short,
-    testutils::Address as _,
+    contract, contractimpl, contracttype, symbol_short,
+    testutils::{Address as _, Events},
     token::{self, StellarAssetClient},
-    Address, Env, MuxedAddress,
+    Address, Env, MuxedAddress, TryFromVal,
 };
 
 // ── Mock UserPortfolio ────────────────────────────────────────────────────────
@@ -62,7 +61,9 @@ impl MockUserPortfolio {
     }
 
     // Satisfy cancel_copy_trade path.
-    pub fn has_position(_env: Env, _user: Address, _trade_id: u64) -> bool { false }
+    pub fn has_position(_env: Env, _user: Address, _trade_id: u64) -> bool {
+        false
+    }
     pub fn close_position(_env: Env, _user: Address, _trade_id: u64, _pnl: i128) {}
 }
 
@@ -314,8 +315,10 @@ fn reentrant_call_returns_reentrancy_detected() {
     let token = sac_token(&env);
 
     // Give user enough balance so the balance check passes on the outer call.
-    StellarAssetClient::new(&env, &token)
-        .mint(&user, &(TRADE_AMOUNT + DEFAULT_ESTIMATED_COPY_TRADE_FEE + 1_000_000));
+    StellarAssetClient::new(&env, &token).mint(
+        &user,
+        &(TRADE_AMOUNT + DEFAULT_ESTIMATED_COPY_TRADE_FEE + 1_000_000),
+    );
 
     let portfolio_id = env.register(ReentrantPortfolio, ());
     let exec_id = env.register(TradeExecutorContract, ());
@@ -523,7 +526,9 @@ impl MockPortfolioWithPositions {
     pub fn last_closed(env: Env) -> Option<u64> {
         env.storage().instance().get(&PortfolioKey::LastClosed)
     }
-    pub fn validate_and_record(_env: Env, _user: Address, _max_positions: u32) -> u32 { 1 }
+    pub fn validate_and_record(_env: Env, _user: Address, _max_positions: u32) -> u32 {
+        1
+    }
 }
 
 fn setup_cancel(router_out: i128) -> (Env, Address, Address, Address, Address, Address, Address) {
@@ -551,7 +556,15 @@ fn setup_cancel(router_out: i128) -> (Env, Address, Address, Address, Address, A
 
     StellarAssetClient::new(&env, &token_a).mint(&exec_id, &1_000_000_000);
 
-    (env, exec_id, portfolio_id, user, token_a, token_b, router_id)
+    (
+        env,
+        exec_id,
+        portfolio_id,
+        user,
+        token_a,
+        token_b,
+        router_id,
+    )
 }
 
 #[test]
@@ -560,7 +573,9 @@ fn cancel_copy_trade_success() {
     let exec = TradeExecutorContractClient::new(&env, &exec_id);
 
     MockPortfolioWithPositionsClient::new(&env, &portfolio_id).add_position(&user, &1u64);
-    exec.cancel_copy_trade(&user, &user, &1u64, &token_a, &token_b, &1_000_000, &900_000);
+    exec.cancel_copy_trade(
+        &user, &user, &1u64, &token_a, &token_b, &1_000_000, &900_000,
+    );
 
     assert_eq!(
         MockPortfolioWithPositionsClient::new(&env, &portfolio_id).last_closed(),
@@ -578,7 +593,14 @@ fn cancel_copy_trade_unauthorized() {
 
     let err = env.as_contract(&exec_id, || {
         TradeExecutorContract::cancel_copy_trade(
-            env.clone(), attacker, user, 1u64, token_a, token_b, 1_000_000, 900_000,
+            env.clone(),
+            attacker,
+            user,
+            1u64,
+            token_a,
+            token_b,
+            1_000_000,
+            900_000,
         )
     });
     assert_eq!(err, Err(ContractError::Unauthorized));
@@ -592,7 +614,14 @@ fn cancel_copy_trade_not_found() {
 
     let err = env.as_contract(&exec_id, || {
         TradeExecutorContract::cancel_copy_trade(
-            env.clone(), user.clone(), user, 99u64, token_a, token_b, 1_000_000, 900_000,
+            env.clone(),
+            user.clone(),
+            user,
+            99u64,
+            token_a,
+            token_b,
+            1_000_000,
+            900_000,
         )
     });
     assert_eq!(err, Err(ContractError::TradeNotFound));
@@ -604,13 +633,15 @@ fn cancel_copy_trade_pnl_calculation() {
     let exec = TradeExecutorContractClient::new(&env, &exec_id);
 
     MockPortfolioWithPositionsClient::new(&env, &portfolio_id).add_position(&user, &2u64);
-    exec.cancel_copy_trade(&user, &user, &2u64, &token_a, &token_b, &1_000_000, &900_000);
+    exec.cancel_copy_trade(
+        &user, &user, &2u64, &token_a, &token_b, &1_000_000, &900_000,
+    );
 
     let found = env.events().all().iter().any(|e| {
         let topics: soroban_sdk::Vec<soroban_sdk::Val> = e.1.clone();
         topics
             .get(0)
-            .and_then(|v| soroban_sdk::Symbol::try_from(v).ok())
+            .and_then(|v| soroban_sdk::Symbol::try_from_val(&env, &v).ok())
             .map(|s| s == soroban_sdk::Symbol::new(&env, "TradeCancelled"))
             .unwrap_or(false)
     });
