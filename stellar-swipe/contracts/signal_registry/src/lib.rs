@@ -56,11 +56,10 @@ use reputation::{
     calculate_trust_score, get_trust_score, update_median_values, update_trust_score,
     TrustScoreDetails, TrustScoreTier,
 };
-use soroban_sdk::{
-    contract, contractimpl, contracttype, Address, Bytes, Env, IntoVal, Map, String, Symbol, Val,
-    Vec,
-};
-use stellar_swipe_common::{health_uninitialized, placeholder_admin, HealthStatus};
+use categories::{RiskLevel, SignalCategory};
+use errors::{AdminError, TemplateError, ContestError, VersioningError};
+pub use leaderboard::{get_leaderboard as get_leaderboard_internal, update_leaderboard_index, LeaderboardMetric, ProviderLeaderboard};
+use soroban_sdk::{contract, contractimpl, contracttype, Address, Bytes, Env, Map, String, Vec};
 use stellar_swipe_common::{validate_asset_pair as validate_asset_pair_common, AssetPairError};
 use templates::{SignalTemplate, DEFAULT_TEMPLATE_EXPIRY_HOURS};
 use types::{
@@ -1022,6 +1021,9 @@ impl SignalRegistry {
 
             provider_stats_map.set(signal.provider.clone(), provider_stats.clone());
             Self::save_provider_stats_map(&env, &provider_stats_map);
+
+            // Update leaderboard index (O(INDEX_CAPACITY) in-memory, O(1) query after)
+            update_leaderboard_index(&env, signal.provider.clone(), &provider_stats);
 
             // Update trust score when performance changes
             Self::update_provider_trust_score(env.clone(), signal.provider.clone());
@@ -2148,6 +2150,54 @@ impl SignalRegistry {
 
         (highly_trusted, trusted, emerging, new_unproven)
     }
+
+    /* =========================
+       STORAGE STATS (Issue #3)
+    ========================== */
+
+    /// Returns estimated storage usage metrics.
+    ///
+    /// # Estimation methodology
+    /// - `total_signals`: exact count from Signals map.
+    /// - `total_providers`: exact count from ProviderStats map.
+    /// - `total_positions`: approximated as total_signals × avg_executions_per_signal (2).
+    /// - `estimated_rent_xlm`: entry_count × avg_entry_size_bytes × RENT_RATE_XLM_PER_BYTE.
+    ///   avg_entry_size ≈ 256 bytes; rent_rate ≈ 0.00001 XLM/byte (Soroban Protocol 23).
+    ///   Result is in stroops (1 XLM = 10_000_000 stroops).
+    ///
+    /// # Rent cost projection for 10,000 users
+    /// Assuming 5 signals/user → 50,000 signal entries + 10,000 provider entries = 60,000 entries.
+    /// 60,000 × 256 bytes × 0.00001 XLM/byte ≈ 153.6 XLM total rent.
+    pub fn get_storage_stats(env: Env) -> StorageStats {
+        let signals = Self::get_signals_map(&env);
+        let providers = Self::get_provider_stats_map(&env);
+
+        let total_signals = signals.len();
+        let total_providers = providers.len();
+        // Approximate: each signal averages 2 trade executions stored
+        let total_positions = total_signals.saturating_mul(2);
+
+        // Rent estimate: entries × 256 bytes × 100 stroops/byte
+        let entry_count = (total_signals + total_providers) as i128;
+        let estimated_rent_xlm = entry_count * 256 * 100;
+
+        StorageStats {
+            total_signals,
+            total_positions,
+            total_providers,
+            estimated_rent_xlm,
+        }
+    }
+}
+
+#[contracttype]
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct StorageStats {
+    pub total_signals: u32,
+    pub total_positions: u32,
+    pub total_providers: u32,
+    /// Estimated rent in stroops (1 XLM = 10_000_000 stroops).
+    pub estimated_rent_xlm: i128,
 }
 
 #[cfg(test)]

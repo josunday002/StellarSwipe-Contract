@@ -7,9 +7,8 @@ members = [
   "contracts/trade_executor",
   "contracts/governance",
   "contracts/oracle",
-  "contracts/bridge",
-  "contracts/fee_collector",
-  "contracts/user_portfolio",
+  "contracts/stake_vault",
+  "contracts/shared",
 ]
 
 [workspace.dependencies]
