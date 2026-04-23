@@ -101,6 +101,9 @@ pub fn check_and_trigger_take_profit(
     asset_pair: u32,
 ) -> Result<bool, ContractError> {
     let (oracle, portfolio) = fetch_oracle_and_portfolio(env)?;
+    let take_profit_price =
+        get_take_profit(env, &user, trade_id).ok_or(ContractError::NotInitialized)?;
+    let current_price = fetch_current_price(env, &oracle, asset_pair)?;
 
     let take_profit_price: i128 = get_take_profit(env, &user, trade_id)
         .ok_or(ContractError::NotInitialized)?;
@@ -149,8 +152,8 @@ mod tests {
         pub fn get_price(env: Env, _asset_pair: u32) -> i128 {
             env.storage()
                 .instance()
-                .get(&symbol_short!("price"))
-                .unwrap_or(0)
+                .get(&(symbol_short!("price"), asset_pair))
+                .unwrap()
         }
     }
 
@@ -173,6 +176,7 @@ mod tests {
     fn setup() -> (Env, Address, Address, Address, Address) {
         let env = Env::default();
         env.mock_all_auths();
+        env.ledger().with_mut(|ledger| ledger.timestamp = 1_000);
 
         let admin = Address::generate(&env);
         let oracle_id = env.register(MockOracle, ());

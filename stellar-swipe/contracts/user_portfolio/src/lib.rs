@@ -45,7 +45,7 @@ pub struct UserPortfolio;
 
 #[contractimpl]
 impl UserPortfolio {
-    /// One-time setup: admin and oracle (`get_price() -> i128`) used for unrealized P&L.
+    /// One-time setup: admin and oracle (`get_price(asset_pair) -> OraclePrice`) used for unrealized P&L.
     pub fn initialize(env: Env, admin: Address, oracle: Address) {
         if env.storage().instance().has(&DataKey::Initialized) {
             panic!("already initialized");
@@ -54,12 +54,24 @@ impl UserPortfolio {
         env.storage().instance().set(&DataKey::Initialized, &true);
         env.storage().instance().set(&DataKey::Admin, &admin);
         env.storage().instance().set(&DataKey::Oracle, &oracle);
-        env.storage().instance().set(&DataKey::NextPositionId, &1u64);
+        env.storage()
+            .instance()
+            .set(&DataKey::OracleAssetPair, &0u32);
+        env.storage()
+            .instance()
+            .set(&DataKey::NextPositionId, &1u64);
     }
 
     pub fn set_oracle(env: Env, oracle: Address) {
         Self::require_admin(&env);
         env.storage().instance().set(&DataKey::Oracle, &oracle);
+    }
+
+    pub fn set_oracle_asset_pair(env: Env, asset_pair: u32) {
+        Self::require_admin(&env);
+        env.storage()
+            .instance()
+            .set(&DataKey::OracleAssetPair, &asset_pair);
     }
 
     /// Opens a position for `user` (caller must be `user`). `amount` is invested notional at entry.
@@ -74,7 +86,9 @@ impl UserPortfolio {
             .get(&DataKey::NextPositionId)
             .expect("next id");
         let next = id.checked_add(1).expect("position id overflow");
-        env.storage().instance().set(&DataKey::NextPositionId, &next);
+        env.storage()
+            .instance()
+            .set(&DataKey::NextPositionId, &next);
 
         let pos = Position {
             entry_price,
@@ -192,28 +206,36 @@ impl UserPortfolio {
     }
 
     fn require_admin(env: &Env) {
-        let admin: Address = env.storage().instance().get(&DataKey::Admin).expect("admin");
+        let admin: Address = env
+            .storage()
+            .instance()
+            .get(&DataKey::Admin)
+            .expect("admin");
         admin.require_auth();
     }
 }
 
 #[cfg(test)]
 mod oracle_ok {
-    use soroban_sdk::{contract, contractimpl, Env, Symbol};
+    use soroban_sdk::{contract, contractimpl, symbol_short, Env};
+    use stellar_swipe_common::OraclePrice;
 
     #[contract]
     pub struct OracleMock;
 
     #[contractimpl]
     impl OracleMock {
-        pub fn set_price(env: Env, price: i128) {
-            let key = Symbol::new(&env, "PRICE");
-            env.storage().instance().set(&key, &price);
+        pub fn set_price(env: Env, asset_pair: u32, price: OraclePrice) {
+            env.storage()
+                .instance()
+                .set(&(symbol_short!("price"), asset_pair), &price);
         }
 
-        pub fn get_price(env: Env) -> i128 {
-            let key = Symbol::new(&env, "PRICE");
-            env.storage().instance().get(&key).unwrap()
+        pub fn get_price(env: Env, asset_pair: u32) -> OraclePrice {
+            env.storage()
+                .instance()
+                .get(&(symbol_short!("price"), asset_pair))
+                .unwrap()
         }
     }
 }
@@ -221,13 +243,14 @@ mod oracle_ok {
 #[cfg(test)]
 mod oracle_fail {
     use soroban_sdk::{contract, contractimpl, Env};
+    use stellar_swipe_common::OraclePrice;
 
     #[contract]
     pub struct OraclePanic;
 
     #[contractimpl]
     impl OraclePanic {
-        pub fn get_price(_env: Env) -> i128 {
+        pub fn get_price(_env: Env, _asset_pair: u32) -> OraclePrice {
             panic!("oracle unavailable")
         }
     }
@@ -239,7 +262,8 @@ mod tests {
     use super::oracle_ok::OracleMock;
     use super::oracle_ok::OracleMockClient;
     use super::*;
-    use soroban_sdk::testutils::Address as _;
+    use soroban_sdk::testutils::{Address as _, Ledger};
+    use stellar_swipe_common::OraclePrice;
 
     #[allow(deprecated)]
     fn setup_portfolio(
@@ -247,11 +271,20 @@ mod tests {
         use_working_oracle: bool,
         initial_price: i128,
     ) -> (Address, Address, Address) {
+        env.ledger().with_mut(|ledger| ledger.timestamp = 1_000);
         let admin = Address::generate(env);
         let user = Address::generate(env);
         let oracle_id = if use_working_oracle {
             let id = env.register_contract(None, OracleMock);
-            OracleMockClient::new(env, &id).set_price(&initial_price);
+            OracleMockClient::new(env, &id).set_price(
+                &7u32,
+                &OraclePrice {
+                    price: initial_price * 100,
+                    decimals: 2,
+                    timestamp: env.ledger().timestamp(),
+                    source: soroban_sdk::Symbol::new(env, "mock"),
+                },
+            );
             id
         } else {
             env.register_contract(None, OraclePanic)
@@ -260,6 +293,7 @@ mod tests {
         let client = UserPortfolioClient::new(env, &contract_id);
         env.mock_all_auths();
         client.initialize(&admin, &oracle_id);
+        client.set_oracle_asset_pair(&7u32);
         (user, contract_id, oracle_id)
     }
 
@@ -295,7 +329,15 @@ mod tests {
         let client = UserPortfolioClient::new(&env, &portfolio_id);
 
         client.open_position(&user, &100, &1_000);
-        OracleMockClient::new(&env, &oracle_id).set_price(&120);
+        OracleMockClient::new(&env, &oracle_id).set_price(
+            &7u32,
+            &OraclePrice {
+                price: 12000,
+                decimals: 2,
+                timestamp: env.ledger().timestamp(),
+                source: soroban_sdk::Symbol::new(&env, "mock"),
+            },
+        );
 
         let pnl = client.get_pnl(&user);
         assert_eq!(pnl.realized_pnl, 0);

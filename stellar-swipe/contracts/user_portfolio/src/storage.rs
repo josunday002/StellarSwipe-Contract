@@ -6,6 +6,7 @@ pub enum DataKey {
     Initialized,
     Admin,
     Oracle,
+    OracleAssetPair,
     NextPositionId,
     Position(u64),
     UserPositions(Address),
