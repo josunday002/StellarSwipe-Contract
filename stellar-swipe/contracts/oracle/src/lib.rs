@@ -13,16 +13,18 @@ mod staleness;
 mod storage;
 mod types;
 
-use soroban_sdk::{contract, contractimpl, symbol_short, vec, Address, Env, Map, String, Vec};
-use stellar_swipe_common::emergency::{PauseState, CAT_ALL};
-use stellar_swipe_common::{health_uninitialized, placeholder_admin, Asset, AssetPair, HealthStatus};
 use errors::OracleError;
 use reputation::{
-    adjust_oracle_weight, calculate_reputation, get_oracle_stats, should_remove_oracle, slash_oracle,
-    SlashReason, track_oracle_accuracy,
+    adjust_oracle_weight, calculate_reputation, get_oracle_stats, should_remove_oracle,
+    slash_oracle, track_oracle_accuracy, SlashReason,
 };
 use sdex::{calculate_spot_price, OrderBook, OrderEntry};
+use soroban_sdk::{contract, contractimpl, symbol_short, vec, Address, Env, Map, String, Vec};
 use staleness::StalenessLevel;
+use stellar_swipe_common::emergency::{PauseState, CAT_ALL};
+use stellar_swipe_common::{
+    health_uninitialized, placeholder_admin, Asset, AssetPair, HealthStatus,
+};
 use types::{
     ConsensusPriceData, ExternalPrice, OracleReputation, PriceData, PriceSubmission, StorageKey,
 };
@@ -133,7 +135,7 @@ impl OracleContract {
         admin::get_pause_states(&env)
     }
 
-    /// Pause a category (admin only)
+    /// Pause a category (admin or guardian)
     pub fn pause_category(
         env: Env,
         caller: Address,
@@ -145,12 +147,35 @@ impl OracleContract {
     }
 
     /// Unpause a category (admin only)
-    pub fn unpause_category(env: Env, caller: Address, category: String) -> Result<(), OracleError> {
+    pub fn unpause_category(
+        env: Env,
+        caller: Address,
+        category: String,
+    ) -> Result<(), OracleError> {
         admin::unpause_category(&env, &caller, category)
     }
 
+    /// Set guardian address (admin only)
+    pub fn set_guardian(env: Env, caller: Address, guardian: Address) -> Result<(), OracleError> {
+        admin::set_guardian(&env, &caller, guardian)
+    }
+
+    /// Revoke guardian (admin only)
+    pub fn revoke_guardian(env: Env, caller: Address) -> Result<(), OracleError> {
+        admin::revoke_guardian(&env, &caller)
+    }
+
+    /// Get current guardian, if any.
+    pub fn get_guardian(env: Env) -> Option<Address> {
+        admin::get_guardian(&env)
+    }
+
     /// Propose admin transfer (current admin only)
-    pub fn propose_admin_transfer(env: Env, caller: Address, new_admin: Address) -> Result<(), OracleError> {
+    pub fn propose_admin_transfer(
+        env: Env,
+        caller: Address,
+        new_admin: Address,
+    ) -> Result<(), OracleError> {
         admin::propose_admin_transfer(&env, &caller, new_admin)
     }
 

@@ -57,3 +57,93 @@ fn health_initialized_when_paused() {
     assert!(h.is_initialized);
     assert!(h.is_paused);
 }
+
+#[test]
+fn guardian_can_pause() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let id = env.register_contract(None, OracleContract);
+    let client = OracleContractClient::new(&env, &id);
+    let admin = Address::generate(&env);
+    let guardian = Address::generate(&env);
+    client.initialize(&admin, &xlm(&env));
+    client.set_guardian(&admin, &guardian);
+
+    client.pause_category(
+        &guardian,
+        &String::from_str(&env, CAT_ALL),
+        &None,
+        &String::from_str(&env, "guardian pause"),
+    );
+
+    let states = client.get_pause_states();
+    assert!(states.contains_key(String::from_str(&env, CAT_ALL)));
+}
+
+#[test]
+fn guardian_cannot_unpause() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let id = env.register_contract(None, OracleContract);
+    let client = OracleContractClient::new(&env, &id);
+    let admin = Address::generate(&env);
+    let guardian = Address::generate(&env);
+    client.initialize(&admin, &xlm(&env));
+    client.set_guardian(&admin, &guardian);
+    client.pause_category(
+        &guardian,
+        &String::from_str(&env, CAT_ALL),
+        &None,
+        &String::from_str(&env, "guardian pause"),
+    );
+
+    let result = client.try_unpause_category(&guardian, &String::from_str(&env, CAT_ALL));
+    assert!(result.is_err());
+}
+
+#[test]
+fn admin_can_unpause_after_guardian_pause() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let id = env.register_contract(None, OracleContract);
+    let client = OracleContractClient::new(&env, &id);
+    let admin = Address::generate(&env);
+    let guardian = Address::generate(&env);
+    client.initialize(&admin, &xlm(&env));
+    client.set_guardian(&admin, &guardian);
+    client.pause_category(
+        &guardian,
+        &String::from_str(&env, CAT_ALL),
+        &None,
+        &String::from_str(&env, "guardian pause"),
+    );
+
+    client.unpause_category(&admin, &String::from_str(&env, CAT_ALL));
+    let states = client.get_pause_states();
+    assert!(!states.contains_key(String::from_str(&env, CAT_ALL)));
+}
+
+#[test]
+fn admin_can_set_and_revoke_guardian() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let id = env.register_contract(None, OracleContract);
+    let client = OracleContractClient::new(&env, &id);
+    let admin = Address::generate(&env);
+    let guardian = Address::generate(&env);
+    client.initialize(&admin, &xlm(&env));
+
+    client.set_guardian(&admin, &guardian);
+    assert_eq!(client.get_guardian(), Some(guardian.clone()));
+
+    client.revoke_guardian(&admin);
+    assert_eq!(client.get_guardian(), None);
+
+    let result = client.try_pause_category(
+        &guardian,
+        &String::from_str(&env, CAT_ALL),
+        &None,
+        &String::from_str(&env, "should fail"),
+    );
+    assert!(result.is_err());
+}

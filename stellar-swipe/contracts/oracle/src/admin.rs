@@ -1,8 +1,42 @@
-use soroban_sdk::{Address, Env, Map, String, contracttype};
+use soroban_sdk::{contracttype, Address, Env, Map, String};
 use stellar_swipe_common::emergency::{PauseState, CAT_ALL};
 
 use crate::errors::OracleError;
+use crate::events::{emit_guardian_revoked, emit_guardian_set};
 use crate::types::StorageKey;
+
+pub fn set_guardian(env: &Env, caller: &Address, guardian: Address) -> Result<(), OracleError> {
+    require_admin(env, caller)?;
+    caller.require_auth();
+    env.storage()
+        .instance()
+        .set(&StorageKey::Guardian, &guardian);
+    emit_guardian_set(env, guardian);
+    Ok(())
+}
+
+pub fn revoke_guardian(env: &Env, caller: &Address) -> Result<(), OracleError> {
+    require_admin(env, caller)?;
+    caller.require_auth();
+    let guardian: Address = env
+        .storage()
+        .instance()
+        .get(&StorageKey::Guardian)
+        .ok_or(OracleError::Unauthorized)?;
+    env.storage().instance().remove(&StorageKey::Guardian);
+    emit_guardian_revoked(env, guardian);
+    Ok(())
+}
+
+pub fn get_guardian(env: &Env) -> Option<Address> {
+    env.storage().instance().get(&StorageKey::Guardian)
+}
+
+fn is_guardian(env: &Env, caller: &Address) -> bool {
+    get_guardian(env)
+        .map(|guardian| guardian == *caller)
+        .unwrap_or(false)
+}
 
 pub fn pause_category(
     env: &Env,
@@ -11,7 +45,9 @@ pub fn pause_category(
     duration: Option<u64>,
     reason: String,
 ) -> Result<(), OracleError> {
-    require_admin(env, caller)?;
+    if !is_guardian(env, caller) {
+        require_admin(env, caller)?;
+    }
     caller.require_auth();
 
     let now = env.ledger().timestamp();
@@ -26,7 +62,9 @@ pub fn pause_category(
 
     let mut states = get_pause_states(env);
     states.set(category.clone(), pause_state);
-    env.storage().instance().set(&StorageKey::PauseStates, &states);
+    env.storage()
+        .instance()
+        .set(&StorageKey::PauseStates, &states);
 
     Ok(())
 }
@@ -38,35 +76,44 @@ pub fn unpause_category(env: &Env, caller: &Address, category: String) -> Result
     let mut states = get_pause_states(env);
     if states.contains_key(category.clone()) {
         states.remove(category.clone());
-        env.storage().instance().set(&StorageKey::PauseStates, &states);
+        env.storage()
+            .instance()
+            .set(&StorageKey::PauseStates, &states);
     }
     Ok(())
 }
 
 pub fn get_pause_states(env: &Env) -> Map<String, PauseState> {
-    env.storage().instance().get(&StorageKey::PauseStates).unwrap_or(Map::new(env))
+    env.storage()
+        .instance()
+        .get(&StorageKey::PauseStates)
+        .unwrap_or(Map::new(env))
 }
 
 pub fn is_paused(env: &Env, category: String) -> bool {
     let states = get_pause_states(env);
-    
+
     if let Some(all_pause) = states.get(String::from_str(env, CAT_ALL)) {
         if is_state_active(env, &all_pause) {
             return true;
         }
     }
-    
+
     if let Some(pause) = states.get(category) {
         return is_state_active(env, &pause);
     }
-    
+
     false
 }
 
 fn is_state_active(env: &Env, state: &PauseState) -> bool {
-    if !state.paused { return false; }
+    if !state.paused {
+        return false;
+    }
     if let Some(auto) = state.auto_unpause_at {
-        if env.ledger().timestamp() >= auto { return false; }
+        if env.ledger().timestamp() >= auto {
+            return false;
+        }
     }
     true
 }
@@ -148,7 +195,9 @@ pub fn accept_admin_transfer(env: &Env, caller: &Address) -> Result<(), OracleEr
     if now >= expires_at {
         // Clean up expired transfer
         env.storage().instance().remove(&StorageKey::PendingAdmin);
-        env.storage().instance().remove(&StorageKey::PendingAdminExpiry);
+        env.storage()
+            .instance()
+            .remove(&StorageKey::PendingAdminExpiry);
         return Err(OracleError::PendingAdminExpired);
     }
 
@@ -166,7 +215,9 @@ pub fn accept_admin_transfer(env: &Env, caller: &Address) -> Result<(), OracleEr
 
     // Clean up pending admin entries
     env.storage().instance().remove(&StorageKey::PendingAdmin);
-    env.storage().instance().remove(&StorageKey::PendingAdminExpiry);
+    env.storage()
+        .instance()
+        .remove(&StorageKey::PendingAdminExpiry);
 
     // Emit completion event
     env.events().publish(
@@ -195,7 +246,9 @@ pub fn cancel_admin_transfer(env: &Env, caller: &Address) -> Result<(), OracleEr
 
     // Remove pending transfer
     env.storage().instance().remove(&StorageKey::PendingAdmin);
-    env.storage().instance().remove(&StorageKey::PendingAdminExpiry);
+    env.storage()
+        .instance()
+        .remove(&StorageKey::PendingAdminExpiry);
 
     Ok(())
 }

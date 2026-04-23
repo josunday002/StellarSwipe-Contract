@@ -40,3 +40,15 @@ pub fn emit_consensus_reached(env: &Env, price: i128, num_oracles: u32) {
         (price, num_oracles),
     );
 }
+
+pub fn emit_guardian_set(env: &Env, guardian: Address) {
+    env.events()
+        .publish((symbol_short!("guardian"), symbol_short!("set")), guardian);
+}
+
+pub fn emit_guardian_revoked(env: &Env, guardian: Address) {
+    env.events().publish(
+        (symbol_short!("guardian"), symbol_short!("revoked")),
+        guardian,
+    );
+}
