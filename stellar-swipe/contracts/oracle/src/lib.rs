@@ -13,16 +13,18 @@ mod staleness;
 mod storage;
 mod types;
 
-use soroban_sdk::{contract, contractimpl, symbol_short, vec, Address, Env, Map, String, Vec};
-use stellar_swipe_common::emergency::{PauseState, CAT_ALL};
-use stellar_swipe_common::{health_uninitialized, placeholder_admin, Asset, AssetPair, HealthStatus};
 use errors::OracleError;
 use reputation::{
-    adjust_oracle_weight, calculate_reputation, get_oracle_stats, should_remove_oracle, slash_oracle,
-    SlashReason, track_oracle_accuracy,
+    adjust_oracle_weight, calculate_reputation, get_oracle_stats, should_remove_oracle,
+    slash_oracle, track_oracle_accuracy, SlashReason,
 };
 use sdex::{calculate_spot_price, OrderBook, OrderEntry};
-use staleness::StalenessLevel;
+use soroban_sdk::{contract, contractimpl, symbol_short, vec, Address, Env, Map, String, Vec};
+use staleness::{OracleHealth, OracleStatus, StalenessLevel};
+use stellar_swipe_common::emergency::{PauseState, CAT_ALL};
+use stellar_swipe_common::{
+    health_uninitialized, placeholder_admin, Asset, AssetPair, HealthStatus,
+};
 use types::{
     ConsensusPriceData, ExternalPrice, OracleReputation, PriceData, PriceSubmission, StorageKey,
 };
@@ -77,6 +79,7 @@ impl OracleContract {
         storage::set_price(&env, &pair, price);
         storage::add_available_pair(&env, pair.clone());
         history::store_price(&env, &pair, price);
+        on_price_update(&env, pair);
         Ok(())
     }
 
@@ -128,6 +131,13 @@ impl OracleContract {
         history::get_historical_price(&env, &pair, timestamp)
     }
 
+    /// Check oracle heartbeat health for a pair using ledger freshness.
+    pub fn check_oracle_heartbeat(env: Env, pair: AssetPair) -> OracleHealth {
+        let health = staleness::check_oracle_heartbeat(&env, &pair);
+        maybe_emit_heartbeat_missed(&env, &pair, &health);
+        health
+    }
+
     /// Get current pause states
     pub fn get_pause_states(env: Env) -> Map<String, PauseState> {
         admin::get_pause_states(&env)
@@ -145,12 +155,20 @@ impl OracleContract {
     }
 
     /// Unpause a category (admin only)
-    pub fn unpause_category(env: Env, caller: Address, category: String) -> Result<(), OracleError> {
+    pub fn unpause_category(
+        env: Env,
+        caller: Address,
+        category: String,
+    ) -> Result<(), OracleError> {
         admin::unpause_category(&env, &caller, category)
     }
 
     /// Propose admin transfer (current admin only)
-    pub fn propose_admin_transfer(env: Env, caller: Address, new_admin: Address) -> Result<(), OracleError> {
+    pub fn propose_admin_transfer(
+        env: Env,
+        caller: Address,
+        new_admin: Address,
+    ) -> Result<(), OracleError> {
         admin::propose_admin_transfer(&env, &caller, new_admin)
     }
 
@@ -601,6 +619,7 @@ impl OracleContract {
         let consensus_price = crate::external_adapter::process_external_prices(&env, prices)?;
         if let Some(pair) = first_pair {
             storage::set_price(&env, &pair, consensus_price);
+            on_price_update(&env, pair);
         }
 
         Ok(consensus_price)
@@ -643,8 +662,28 @@ pub fn on_price_update(env: &Env, pair: AssetPair) {
     }
 
     metadata.last_update = env.ledger().timestamp();
+    metadata.last_update_ledger = env.ledger().sequence();
     metadata.update_count_24h += 1;
+    metadata.last_heartbeat_status = OracleStatus::Healthy;
     staleness::set_metadata(env, &pair, metadata);
+}
+
+fn maybe_emit_heartbeat_missed(env: &Env, pair: &AssetPair, health: &OracleHealth) {
+    if health.status == OracleStatus::Healthy {
+        return;
+    }
+
+    let mut metadata = staleness::get_metadata(env, pair);
+    if metadata.last_heartbeat_status != health.status {
+        events::emit_oracle_heartbeat_missed(
+            env,
+            health.status.clone(),
+            health.last_update_ledger,
+            health.ledgers_since_update,
+        );
+        metadata.last_heartbeat_status = health.status.clone();
+        staleness::set_metadata(env, pair, metadata);
+    }
 }
 
 #[cfg(test)]
