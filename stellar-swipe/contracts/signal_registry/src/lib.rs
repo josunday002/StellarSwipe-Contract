@@ -115,7 +115,18 @@ impl SignalRegistry {
        INITIALIZATION
     ========================== */
 
-    /// Initialize contract with admin
+    /// # Summary
+    /// One-time contract initialization. Sets the admin address.
+    ///
+    /// # Parameters
+    /// - `env`: Soroban environment.
+    /// - `admin`: Address that will hold admin privileges.
+    ///
+    /// # Returns
+    /// `Ok(())` on success.
+    ///
+    /// # Errors
+    /// - [`AdminError::AlreadyInitialized`] if the contract has already been initialized.
     pub fn initialize(env: Env, admin: Address) -> Result<(), AdminError> {
         init_admin(&env, admin)
     }
@@ -530,6 +541,30 @@ impl SignalRegistry {
        PUBLIC API
     ========================== */
 
+    /// # Summary
+    /// Create a new trading signal. The provider must authorize the call.
+    /// Signals are rate-limited and subject to pause state checks.
+    ///
+    /// # Parameters
+    /// - `env`: Soroban environment.
+    /// - `provider`: Address of the signal provider (must authorize).
+    /// - `asset_pair`: Asset pair string (e.g. `"XLM/USDC"`).
+    /// - `action`: [`SignalAction::Buy`] or [`SignalAction::Sell`].
+    /// - `price`: Target price for the signal (must be > 0).
+    /// - `rationale`: Human-readable rationale for the signal.
+    /// - `expiry`: Unix timestamp when the signal expires (must be in the future, max 30 days).
+    /// - `category`: Signal category (e.g. SWING, SCALP, PREMIUM).
+    /// - `tags`: Up to 10 tags for discoverability.
+    /// - `risk_level`: Risk classification (Low, Medium, High).
+    ///
+    /// # Returns
+    /// The new signal ID.
+    ///
+    /// # Errors
+    /// - [`AdminError::TradingPaused`] — signals category is paused.
+    /// - [`AdminError::RateLimitExceeded`] — provider has exceeded submission rate limit.
+    /// - [`AdminError::InvalidAssetPair`] — asset_pair format is invalid.
+    /// - Panics if expiry is in the past or exceeds 30 days.
     pub fn create_signal(
         env: Env,
         provider: Address,

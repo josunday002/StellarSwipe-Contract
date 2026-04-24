@@ -39,7 +39,16 @@ pub struct OracleContract;
 
 #[contractimpl]
 impl OracleContract {
-    /// Initialize oracle with base currency
+    /// # Summary
+    /// One-time oracle initialization. Sets the admin and base currency.
+    ///
+    /// # Parameters
+    /// - `env`: Soroban environment.
+    /// - `admin`: Address that will hold admin privileges.
+    /// - `base_currency`: The base asset all prices are quoted against.
+    ///
+    /// # Returns
+    /// Nothing. Panics if already initialized.
     pub fn initialize(env: Env, admin: Address, base_currency: Asset) {
         if env.storage().instance().has(&StorageKey::Admin) {
             panic!("already initialized");
@@ -68,7 +77,21 @@ impl OracleContract {
         }
     }
 
-    /// Set price for an asset pair
+    /// # Summary
+    /// Set price for an asset pair. Stores the price, updates history,
+    /// and triggers staleness metadata update.
+    ///
+    /// # Parameters
+    /// - `env`: Soroban environment.
+    /// - `pair`: The asset pair to price.
+    /// - `price`: Price value (must be > 0).
+    ///
+    /// # Returns
+    /// `Ok(())` on success.
+    ///
+    /// # Errors
+    /// - [`OracleError::CircuitBreakerTripped`] — oracle is paused.
+    /// - [`OracleError::InvalidAsset`] — price <= 0.
     pub fn set_price(env: Env, pair: AssetPair, price: i128) -> Result<(), OracleError> {
         if admin::is_paused(&env, String::from_str(&env, CAT_ALL)) {
             return Err(OracleError::CircuitBreakerTripped);
@@ -493,7 +516,21 @@ impl OracleContract {
             .set(&StorageKey::Oracles, &new_oracles);
     }
 
-    /// returns aggregated price
+    /// # Summary
+    /// Get the aggregated price for an asset pair. Applies median aggregation
+    /// across all fresh price sources (staleness TTL: 300s).
+    ///
+    /// # Parameters
+    /// - `env`: Soroban environment.
+    /// - `pair`: The asset pair to query.
+    ///
+    /// # Returns
+    /// The median aggregated price.
+    ///
+    /// # Errors
+    /// - [`OracleError::PriceNotFound`] — no price data for this pair.
+    /// - [`OracleError::StalePrice`] — all price sources are stale (> 300s old).
+    /// - [`OracleError::UnreliablePrice`] — sources disagree by > 10%.
     pub fn get_price(env: Env, pair: AssetPair) -> Result<i128, OracleError> {
         let (price, _) = Self::get_price_with_confidence(env, pair)?;
         Ok(price)

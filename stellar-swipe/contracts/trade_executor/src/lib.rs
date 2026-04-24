@@ -51,7 +51,15 @@ fn effective_estimated_fee(env: &Env) -> i128 {
 #[contractimpl]
 impl TradeExecutorContract {
 
-    /// One-time init; stores admin who may configure the contract.
+    /// # Summary
+    /// One-time contract initialization. Stores the admin address.
+    ///
+    /// # Parameters
+    /// - `env`: Soroban environment.
+    /// - `admin`: Address that will hold admin privileges.
+    ///
+    /// # Returns
+    /// Nothing. Panics if already initialized.
     pub fn initialize(env: Env, admin: Address) {
         if env.storage().instance().has(&StorageKey::Admin) {
             panic!("already initialized");
@@ -59,7 +67,16 @@ impl TradeExecutorContract {
         env.storage().instance().set(&StorageKey::Admin, &admin);
     }
 
-    /// Configure the portfolio contract used for position validation and copy-trade recording.
+    /// # Summary
+    /// Configure the portfolio contract used for position validation and
+    /// copy-trade recording. Admin auth required.
+    ///
+    /// # Parameters
+    /// - `env`: Soroban environment.
+    /// - `portfolio`: Address of the UserPortfolio contract.
+    ///
+    /// # Returns
+    /// Nothing. Panics if not initialized.
     pub fn set_user_portfolio(env: Env, portfolio: Address) {
         let admin: Address = env
             .storage()
@@ -298,6 +315,29 @@ impl TradeExecutorContract {
         env.storage().instance().get(&StorageKey::SdexRouter)
     }
 
+    /// # Summary
+    /// Execute a swap via the configured SDEX router with an explicit minimum
+    /// received amount. Enforces slippage at the balance-delta level.
+    ///
+    /// # Parameters
+    /// - `env`: Soroban environment.
+    /// - `from_token`: SEP-41 token to sell.
+    /// - `to_token`: SEP-41 token to buy.
+    /// - `amount`: Amount of `from_token` to sell (must be > 0).
+    /// - `min_received`: Minimum acceptable amount of `to_token` (must be >= 0).
+    ///
+    /// # Returns
+    /// Actual amount of `to_token` received.
+    ///
+    /// # Errors
+    /// - [`ContractError::NotInitialized`] — SDEX router not configured.
+    /// - [`ContractError::InvalidAmount`] — amount <= 0 or min_received < 0.
+    /// - [`ContractError::SlippageExceeded`] — actual received < min_received.
+    ///
+    /// # Example
+    /// ```rust,ignore
+    /// client.swap(&xlm_token, &usdc_token, &1_000_0000000i128, &990_0000000i128);
+    /// ```
     pub fn swap(
         env: Env,
         from_token: Address,
@@ -313,6 +353,25 @@ impl TradeExecutorContract {
         execute_sdex_swap(&env, &router, &from_token, &to_token, amount, min_received)
     }
 
+    /// # Summary
+    /// Execute a swap with automatic slippage protection. Computes
+    /// `min_received = amount * (10_000 - max_slippage_bps) / 10_000`
+    /// and delegates to [`Self::swap`].
+    ///
+    /// # Parameters
+    /// - `env`: Soroban environment.
+    /// - `from_token`: SEP-41 token to sell.
+    /// - `to_token`: SEP-41 token to buy.
+    /// - `amount`: Amount of `from_token` to sell.
+    /// - `max_slippage_bps`: Maximum acceptable slippage in basis points (e.g. `100` = 1%).
+    ///
+    /// # Returns
+    /// Actual amount of `to_token` received.
+    ///
+    /// # Errors
+    /// - [`ContractError::InvalidAmount`] — amount <= 0 or slippage calculation overflows.
+    /// - [`ContractError::NotInitialized`] — SDEX router not configured.
+    /// - [`ContractError::SlippageExceeded`] — actual received < computed min_received.
     pub fn swap_with_slippage(
         env: Env,
         from_token: Address,

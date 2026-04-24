@@ -97,7 +97,16 @@ pub struct AutoTradeContract;
 
 #[contractimpl]
 impl AutoTradeContract {
-    /// Initialize the contract with an admin
+    /// # Summary
+    /// One-time contract initialization. Sets the admin address and initializes
+    /// pause states and circuit breaker statistics.
+    ///
+    /// # Parameters
+    /// - `env`: Soroban environment.
+    /// - `admin`: Address that will hold admin privileges.
+    ///
+    /// # Returns
+    /// Nothing. Panics if already initialized.
     pub fn initialize(env: Env, admin: Address) {
         admin::init_admin(&env, admin);
     }
@@ -240,7 +249,37 @@ impl AutoTradeContract {
         admin::set_cb_config(&env, &caller, config)
     }
 
-    /// Execute a trade on behalf of a user based on a signal
+    /// # Summary
+    /// Execute a trade on behalf of a user based on a signal. Performs oracle
+    /// circuit-breaker check, risk validation (stop-loss, position limits,
+    /// daily trade limit), smart routing, and records the trade.
+    ///
+    /// # Parameters
+    /// - `env`: Soroban environment.
+    /// - `user`: Address of the trader (must authorize).
+    /// - `signal_id`: ID of the signal to trade on.
+    /// - `order_type`: [`OrderType::Market`] or [`OrderType::Limit`].
+    /// - `amount`: Amount to trade (must be > 0).
+    ///
+    /// # Returns
+    /// [`TradeResult`] containing the executed trade details.
+    ///
+    /// # Errors
+    /// - [`AutoTradeError::TradingPaused`] — trading category is paused.
+    /// - [`AutoTradeError::OracleUnavailable`] — oracle circuit breaker is tripped.
+    /// - [`AutoTradeError::InvalidAmount`] — amount <= 0.
+    /// - [`AutoTradeError::SignalNotFound`] — signal_id does not exist.
+    /// - [`AutoTradeError::SignalExpired`] — signal has expired.
+    /// - [`AutoTradeError::Unauthorized`] — user is not authorized to trade.
+    /// - [`AutoTradeError::InsufficientBalance`] — user has insufficient balance.
+    /// - [`AutoTradeError::PositionLimitExceeded`] — trade would exceed position limit.
+    /// - [`AutoTradeError::DailyTradeLimitExceeded`] — daily trade limit reached.
+    ///
+    /// # Example
+    /// ```rust,ignore
+    /// let result = client.execute_trade(&user, &signal_id, &OrderType::Market, &1_000_0000000i128);
+    /// assert_eq!(result.trade.status, TradeStatus::Filled);
+    /// ```
     pub fn execute_trade(
         env: Env,
         user: Address,
