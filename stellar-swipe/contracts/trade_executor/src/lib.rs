@@ -1,6 +1,7 @@
 #![no_std]
 
 mod errors;
+pub mod keeper;
 pub mod risk_gates;
 pub mod triggers;
 pub mod sdex;
@@ -8,7 +9,7 @@ pub mod sdex;
 use errors::{ContractError, InsufficientBalanceDetail};
 use risk_gates::{
     check_user_balance, resolve_trade_amount, validate_and_record_position,
-    DEFAULT_ESTIMATED_COPY_TRADE_FEE,
+    DEFAULT_ESTIMATED_COPY_TRADE_FEE, MAX_BATCH_SIZE,
 };
 use sdex::{execute_sdex_swap, min_received_from_slippage};
 use soroban_sdk::{contract, contractimpl, contracttype, Address, Env, IntoVal, Symbol, Val, Vec};
@@ -38,6 +39,25 @@ pub enum StorageKey {
 /// Temporary-storage key for the reentrancy lock on `execute_copy_trade`.
 const EXECUTION_LOCK: &str = "ExecLock";
 
+/// A single trade input for [`TradeExecutorContract::batch_execute`].
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct BatchTradeInput {
+    pub user: Address,
+    pub token: Address,
+    pub amount: i128,
+}
+
+/// Per-trade outcome returned by [`TradeExecutorContract::batch_execute`].
+/// `ok = true` means the trade succeeded; `ok = false` means it failed with `error_code`.
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct BatchTradeResult {
+    pub ok: bool,
+    /// `ContractError` discriminant when `ok == false`; 0 when `ok == true`.
+    pub error_code: u32,
+}
+
 #[contract]
 pub struct TradeExecutorContract;
 
@@ -51,7 +71,15 @@ fn effective_estimated_fee(env: &Env) -> i128 {
 #[contractimpl]
 impl TradeExecutorContract {
 
-    /// One-time init; stores admin who may configure the contract.
+    /// # Summary
+    /// One-time contract initialization. Stores the admin address.
+    ///
+    /// # Parameters
+    /// - `env`: Soroban environment.
+    /// - `admin`: Address that will hold admin privileges.
+    ///
+    /// # Returns
+    /// Nothing. Panics if already initialized.
     pub fn initialize(env: Env, admin: Address) {
         if env.storage().instance().has(&StorageKey::Admin) {
             panic!("already initialized");
@@ -59,7 +87,16 @@ impl TradeExecutorContract {
         env.storage().instance().set(&StorageKey::Admin, &admin);
     }
 
-    /// Configure the portfolio contract used for position validation and copy-trade recording.
+    /// # Summary
+    /// Configure the portfolio contract used for position validation and
+    /// copy-trade recording. Admin auth required.
+    ///
+    /// # Parameters
+    /// - `env`: Soroban environment.
+    /// - `portfolio`: Address of the UserPortfolio contract.
+    ///
+    /// # Returns
+    /// Nothing. Panics if not initialized.
     pub fn set_user_portfolio(env: Env, portfolio: Address) {
         let admin: Address = env
             .storage()
@@ -176,7 +213,7 @@ impl TradeExecutorContract {
     ) {
         user.require_auth();
         triggers::set_take_profit(&env, &user, trade_id, take_profit_price);
-        register_watch(&env, &user, trade_id, asset_pair);
+        keeper::register_watch(&env, &user, trade_id, asset_pair);
     }
 
     pub fn check_and_trigger_take_profit(
@@ -298,6 +335,29 @@ impl TradeExecutorContract {
         env.storage().instance().get(&StorageKey::SdexRouter)
     }
 
+    /// # Summary
+    /// Execute a swap via the configured SDEX router with an explicit minimum
+    /// received amount. Enforces slippage at the balance-delta level.
+    ///
+    /// # Parameters
+    /// - `env`: Soroban environment.
+    /// - `from_token`: SEP-41 token to sell.
+    /// - `to_token`: SEP-41 token to buy.
+    /// - `amount`: Amount of `from_token` to sell (must be > 0).
+    /// - `min_received`: Minimum acceptable amount of `to_token` (must be >= 0).
+    ///
+    /// # Returns
+    /// Actual amount of `to_token` received.
+    ///
+    /// # Errors
+    /// - [`ContractError::NotInitialized`] — SDEX router not configured.
+    /// - [`ContractError::InvalidAmount`] — amount <= 0 or min_received < 0.
+    /// - [`ContractError::SlippageExceeded`] — actual received < min_received.
+    ///
+    /// # Example
+    /// ```rust,ignore
+    /// client.swap(&xlm_token, &usdc_token, &1_000_0000000i128, &990_0000000i128);
+    /// ```
     pub fn swap(
         env: Env,
         from_token: Address,
@@ -313,6 +373,25 @@ impl TradeExecutorContract {
         execute_sdex_swap(&env, &router, &from_token, &to_token, amount, min_received)
     }
 
+    /// # Summary
+    /// Execute a swap with automatic slippage protection. Computes
+    /// `min_received = amount * (10_000 - max_slippage_bps) / 10_000`
+    /// and delegates to [`Self::swap`].
+    ///
+    /// # Parameters
+    /// - `env`: Soroban environment.
+    /// - `from_token`: SEP-41 token to sell.
+    /// - `to_token`: SEP-41 token to buy.
+    /// - `amount`: Amount of `from_token` to sell.
+    /// - `max_slippage_bps`: Maximum acceptable slippage in basis points (e.g. `100` = 1%).
+    ///
+    /// # Returns
+    /// Actual amount of `to_token` received.
+    ///
+    /// # Errors
+    /// - [`ContractError::InvalidAmount`] — amount <= 0 or slippage calculation overflows.
+    /// - [`ContractError::NotInitialized`] — SDEX router not configured.
+    /// - [`ContractError::SlippageExceeded`] — actual received < computed min_received.
     pub fn swap_with_slippage(
         env: Env,
         from_token: Address,
@@ -377,14 +456,59 @@ impl TradeExecutorContract {
         close_args.push_back(realized_pnl.into_val(&env));
         env.invoke_contract::<()>(&portfolio, &close_sym, close_args);
 
-        env.events().publish(
-            (Symbol::new(&env, "TradeCancelled"),),
-            (user, trade_id, exit_price, realized_pnl),
+        shared::events::emit_trade_cancelled(
+            &env,
+            shared::events::EvtTradeCancelled {
+                schema_version: shared::events::SCHEMA_VERSION,
+                user: user.clone(),
+                trade_id,
+                exit_price,
+                realized_pnl,
+            },
         );
 
         Ok(())
+    }
+
+    /// Execute a batch of copy trades. Each trade is attempted independently;
+    /// a failure in one trade does NOT roll back successful trades.
+    ///
+    /// Returns a `Vec<BatchTradeResult>` with one entry per input trade, in order.
+    ///
+    /// # Errors
+    /// - [`ContractError::InvalidAmount`] — batch is empty or exceeds `MAX_BATCH_SIZE`.
+    pub fn batch_execute(
+        env: Env,
+        trades: Vec<BatchTradeInput>,
+    ) -> Result<Vec<BatchTradeResult>, ContractError> {
+        let len = trades.len();
+        if len == 0 || len > MAX_BATCH_SIZE {
+            return Err(ContractError::InvalidAmount);
+        }
+
+        let mut results: Vec<BatchTradeResult> = Vec::new(&env);
+
+        for i in 0..len {
+            let trade = trades.get(i).unwrap();
+            let outcome = Self::execute_copy_trade(
+                env.clone(),
+                trade.user,
+                trade.token,
+                trade.amount,
+                None,
+            );
+            let result = match outcome {
+                Ok(()) => BatchTradeResult { ok: true, error_code: 0 },
+                Err(e) => BatchTradeResult { ok: false, error_code: e as u32 },
+            };
+            results.push_back(result);
+        }
+
+        Ok(results)
     }
 }
 
 #[cfg(test)]
 mod test;
+#[cfg(test)]
+mod tests;

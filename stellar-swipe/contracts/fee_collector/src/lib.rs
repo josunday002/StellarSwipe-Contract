@@ -47,6 +47,18 @@ pub struct FeeCollector;
 
 #[contractimpl]
 impl FeeCollector {
+    /// # Summary
+    /// One-time contract initialization. Sets the admin address.
+    ///
+    /// # Parameters
+    /// - `env`: Soroban environment.
+    /// - `admin`: Address that will hold admin privileges.
+    ///
+    /// # Returns
+    /// `Ok(())` on success.
+    ///
+    /// # Errors
+    /// - [`ContractError::AlreadyInitialized`] if the contract has already been initialized.
     pub fn initialize(env: Env, admin: Address) -> Result<(), ContractError> {
         admin.require_auth();
         if is_initialized(&env) {
@@ -57,6 +69,18 @@ impl FeeCollector {
         Ok(())
     }
 
+    /// # Summary
+    /// Set the oracle contract address used for price-based fee calculations.
+    ///
+    /// # Parameters
+    /// - `env`: Soroban environment.
+    /// - `oracle_contract`: Address of the oracle contract.
+    ///
+    /// # Returns
+    /// `Ok(())` on success.
+    ///
+    /// # Errors
+    /// - [`ContractError::NotInitialized`] if the contract has not been initialized.
     pub fn set_oracle_contract(env: Env, oracle_contract: Address) -> Result<(), ContractError> {
         if !is_initialized(&env) {
             return Err(ContractError::NotInitialized);
@@ -67,6 +91,19 @@ impl FeeCollector {
         Ok(())
     }
 
+    /// # Summary
+    /// Returns the effective fee rate in basis points for a specific user,
+    /// accounting for any volume-based rebates.
+    ///
+    /// # Parameters
+    /// - `env`: Soroban environment.
+    /// - `user`: Address of the trader.
+    ///
+    /// # Returns
+    /// Fee rate in basis points (e.g. `30` = 0.30%).
+    ///
+    /// # Errors
+    /// - [`ContractError::NotInitialized`] if the contract has not been initialized.
     pub fn fee_rate_for_user(env: Env, user: Address) -> Result<u32, ContractError> {
         if !is_initialized(&env) {
             return Err(ContractError::NotInitialized);
@@ -74,6 +111,19 @@ impl FeeCollector {
         Ok(rebates::get_fee_rate_for_user(&env, &user))
     }
 
+    /// # Summary
+    /// Returns the 30-day rolling trade volume in USD for a user.
+    /// Used to determine rebate tier eligibility.
+    ///
+    /// # Parameters
+    /// - `env`: Soroban environment.
+    /// - `user`: Address of the trader.
+    ///
+    /// # Returns
+    /// Volume in USD (scaled by asset decimals).
+    ///
+    /// # Errors
+    /// - [`ContractError::NotInitialized`] if the contract has not been initialized.
     pub fn monthly_trade_volume(env: Env, user: Address) -> Result<i128, ContractError> {
         if !is_initialized(&env) {
             return Err(ContractError::NotInitialized);
@@ -81,6 +131,18 @@ impl FeeCollector {
         Ok(rebates::get_active_volume_usd(&env, &user))
     }
 
+    /// # Summary
+    /// Returns the current treasury balance for a given token.
+    ///
+    /// # Parameters
+    /// - `env`: Soroban environment.
+    /// - `token`: SEP-41 token contract address.
+    ///
+    /// # Returns
+    /// Balance in the token's native units.
+    ///
+    /// # Errors
+    /// - [`ContractError::NotInitialized`] if the contract has not been initialized.
     pub fn treasury_balance(env: Env, token: Address) -> Result<i128, ContractError> {
         if !is_initialized(&env) {
             return Err(ContractError::NotInitialized);
@@ -88,6 +150,23 @@ impl FeeCollector {
         Ok(get_treasury_balance(&env, &token))
     }
 
+    /// # Summary
+    /// Queue a treasury withdrawal. The withdrawal becomes executable after a
+    /// 24-hour timelock. Admin auth required.
+    ///
+    /// # Parameters
+    /// - `env`: Soroban environment.
+    /// - `recipient`: Address that will receive the tokens.
+    /// - `token`: SEP-41 token contract address.
+    /// - `amount`: Amount to withdraw (must be > 0 and <= treasury balance).
+    ///
+    /// # Returns
+    /// `Ok(())` on success. Emits a [`WithdrawalQueued`] event.
+    ///
+    /// # Errors
+    /// - [`ContractError::NotInitialized`] — contract not initialized.
+    /// - [`ContractError::InvalidAmount`] — amount <= 0.
+    /// - [`ContractError::InsufficientTreasuryBalance`] — amount exceeds balance.
     pub fn queue_withdrawal(
         env: Env,
         recipient: Address,
@@ -115,16 +194,36 @@ impl FeeCollector {
                 queued_at,
             },
         );
-        WithdrawalQueued {
-            recipient: recipient.clone(),
-            token: token.clone(),
-            amount,
-            available_at: queued_at + SECONDS_PER_DAY,
-        }
-        .publish(&env);
+        emit_withdrawal_queued(
+            &env,
+            EvtWithdrawalQueued {
+                recipient: recipient.clone(),
+                token: token.clone(),
+                amount,
+                available_at: queued_at + SECONDS_PER_DAY,
+            },
+        );
         Ok(())
     }
 
+    /// # Summary
+    /// Execute a previously queued treasury withdrawal after the 24-hour timelock.
+    /// Admin auth required. Parameters must exactly match the queued withdrawal.
+    ///
+    /// # Parameters
+    /// - `env`: Soroban environment.
+    /// - `recipient`: Must match the queued recipient.
+    /// - `token`: Must match the queued token.
+    /// - `amount`: Must match the queued amount.
+    ///
+    /// # Returns
+    /// `Ok(())` on success. Transfers tokens and emits [`TreasuryWithdrawal`].
+    ///
+    /// # Errors
+    /// - [`ContractError::NotInitialized`] — contract not initialized.
+    /// - [`ContractError::WithdrawalNotQueued`] — no matching queued withdrawal.
+    /// - [`ContractError::TimelockNotElapsed`] — 24-hour timelock has not passed.
+    /// - [`ContractError::InsufficientTreasuryBalance`] — balance changed since queuing.
     pub fn withdraw_treasury_fees(
         env: Env,
         recipient: Address,
@@ -142,7 +241,11 @@ impl FeeCollector {
             _ => return Err(ContractError::WithdrawalNotQueued),
         };
 
-        if env.ledger().timestamp() < queued.queued_at + SECONDS_PER_DAY {
+        if env.ledger().timestamp()
+            < queued.queued_at
+                .checked_add(SECONDS_PER_DAY)
+                .ok_or(ContractError::ArithmeticOverflow)?
+        {
             return Err(ContractError::TimelockNotElapsed);
         }
 
@@ -163,13 +266,15 @@ impl FeeCollector {
         set_treasury_balance(&env, &token, new_balance);
         remove_queued_withdrawal(&env);
 
-        TreasuryWithdrawal {
-            recipient: recipient.clone(),
-            token: token.clone(),
-            amount,
-            remaining_balance: new_balance,
-        }
-        .publish(&env);
+        emit_treasury_withdrawal(
+            &env,
+            EvtTreasuryWithdrawal {
+                recipient: recipient.clone(),
+                token: token.clone(),
+                amount,
+                remaining_balance: new_balance,
+            },
+        );
 
         Ok(())
     }
@@ -202,12 +307,14 @@ impl FeeCollector {
         let old_rate = get_fee_rate(&env);
         set_fee_rate_storage(&env, new_rate_bps);
 
-        FeeRateUpdated {
-            old_rate,
-            new_rate: new_rate_bps,
-            updated_by: admin,
-        }
-        .publish(&env);
+        emit_fee_rate_updated(
+            &env,
+            EvtFeeRateUpdated {
+                old_rate,
+                new_rate: new_rate_bps,
+                updated_by: admin,
+            },
+        );
 
         Ok(())
     }
@@ -235,6 +342,26 @@ impl FeeCollector {
         Ok(())
     }
 
+    /// # Summary
+    /// Collect a fee from a trader for a completed trade. Transfers the fee
+    /// from the trader to this contract, burns the configured burn slice,
+    /// and credits the remainder to the treasury.
+    ///
+    /// # Parameters
+    /// - `env`: Soroban environment.
+    /// - `trader`: Address of the trader (must authorize).
+    /// - `token`: SEP-41 token used to pay the fee.
+    /// - `trade_amount`: Gross trade amount (fee is calculated as a percentage).
+    /// - `trade_asset`: Asset pair traded (used for volume tracking).
+    ///
+    /// # Returns
+    /// The total fee amount collected (before burn).
+    ///
+    /// # Errors
+    /// - [`ContractError::NotInitialized`] — contract not initialized.
+    /// - [`ContractError::InvalidAmount`] — trade_amount <= 0.
+    /// - [`ContractError::FeeRoundedToZero`] — fee rounds to zero at current rate.
+    /// - [`ContractError::ArithmeticOverflow`] — overflow in fee calculation.
     pub fn collect_fee(
         env: Env,
         trader: Address,
@@ -278,12 +405,17 @@ impl FeeCollector {
             &fee_amount,
         );
 
-        // Burn slice
+        // ROUNDING STRATEGY: burn slice truncates (rounds down) — provider-favorable.
+        // burn_amount + distributable == fee_amount exactly (no dust):
+        //   distributable = fee_amount - burn_amount
+        // Because burn_amount is truncated, distributable is effectively rounded up,
+        // ensuring every stroop of fee_amount is either burned or credited to the treasury.
         let burn_rate = get_burn_rate(&env);
         let burn_amount = fee_amount
             .checked_mul(burn_rate as i128)
             .and_then(|v| v.checked_div(10_000))
             .ok_or(ContractError::ArithmeticOverflow)?;
+        // distributable = fee_amount - burn_amount: no remainder, no dust possible.
         let distributable = fee_amount
             .checked_sub(burn_amount)
             .ok_or(ContractError::ArithmeticOverflow)?;
@@ -303,6 +435,17 @@ impl FeeCollector {
         set_treasury_balance(&env, &token, updated_treasury_balance);
 
         rebates::record_trade_volume(&env, &trader, &trade_asset, trade_amount)?;
+
+        emit_fee_collected(
+            &env,
+            EvtFeeCollected {
+                trader: trader.clone(),
+                token: token.clone(),
+                trade_amount,
+                fee_amount,
+                fee_rate_bps: fee_rate,
+            },
+        );
 
         Ok(fee_amount)
     }
@@ -326,12 +469,14 @@ impl FeeCollector {
             set_pending_fees(&env, &provider, &token, 0);
         }
 
-        FeesClaimed {
-            provider: provider.clone(),
-            token: token.clone(),
-            amount,
-        }
-        .publish(&env);
+        emit_fees_claimed(
+            &env,
+            EvtFeesClaimed {
+                provider: provider.clone(),
+                token: token.clone(),
+                amount,
+            },
+        );
 
         Ok(amount)
     }

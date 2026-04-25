@@ -282,6 +282,7 @@ fn execute_copy_trade_requires_user_auth() {
             user.clone(),
             token.clone(),
             TRADE_AMOUNT,
+            None,
         )
     });
     // Without mock_all_auths the require_auth() panics, surfaced as an error.
@@ -353,7 +354,7 @@ fn reentrant_call_returns_reentrancy_detected() {
     ReentrantPortfolioClient::new(&env, &portfolio_id).set_executor(&exec_id);
     ReentrantPortfolioClient::new(&env, &portfolio_id).set_user(&user);
 
-    exec.execute_copy_trade(&user, &token, &TRADE_AMOUNT);
+    exec.execute_copy_trade(&user, &token, &TRADE_AMOUNT, &None::<u32>);
 
     assert!(
         ReentrantPortfolioClient::new(&env, &portfolio_id).was_blocked(),
@@ -755,4 +756,28 @@ fn cancel_copy_trade_third_party_rejected() {
         )
     });
     assert_eq!(err, Err(ContractError::Unauthorized));
+}
+
+// ── Event format tests ────────────────────────────────────────────────────────
+
+fn last_event_topics(env: &Env) -> (soroban_sdk::Symbol, soroban_sdk::Symbol) {
+    use soroban_sdk::testutils::Events;
+    use soroban_sdk::TryFromVal;
+    let events = env.events().all();
+    let e = events.last().unwrap();
+    let topics: soroban_sdk::Vec<soroban_sdk::Val> = e.1;
+    let t0 = soroban_sdk::Symbol::try_from_val(env, &topics.get(0).unwrap()).unwrap();
+    let t1 = soroban_sdk::Symbol::try_from_val(env, &topics.get(1).unwrap()).unwrap();
+    (t0, t1)
+}
+
+#[test]
+fn trade_cancelled_event_has_two_topic_format() {
+    let (env, exec_id, portfolio_id, user, token_a, token_b, _) = setup_cancel(1_100_000);
+    let exec = TradeExecutorContractClient::new(&env, &exec_id);
+    MockPortfolioWithPositionsClient::new(&env, &portfolio_id).add_position(&user, &1u64);
+    exec.cancel_copy_trade(&user, &user, &1u64, &token_a, &token_b, &1_000_000, &900_000);
+    let (contract, event) = last_event_topics(&env);
+    assert_eq!(contract, soroban_sdk::Symbol::new(&env, "trade_executor"));
+    assert_eq!(event, soroban_sdk::Symbol::new(&env, "trade_cancelled"));
 }

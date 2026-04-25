@@ -86,10 +86,10 @@ pub struct SignalAdoptedEvent {
 }
 
 pub fn emit_signal_adopted(env: &Env, signal_id: u64, adopter: Address, new_count: u32) {
-    let topics = (Symbol::new(env, "signal_adopted"),);
-    env.events().publish(
-        topics,
-        SignalAdoptedEvent {
+    shared::events::emit_signal_adopted(
+        env,
+        shared::events::EvtSignalAdopted {
+            schema_version: shared::events::SCHEMA_VERSION,
             signal_id,
             adopter,
             new_count,
@@ -214,10 +214,10 @@ pub fn emit_signal_edited(
     rationale_hash: String,
     confidence: u32,
 ) {
-    let topics = (Symbol::new(env, "signal_edited"),);
-    env.events().publish(
-        topics,
-        SignalEditedEvent {
+    shared::events::emit_signal_edited(
+        env,
+        shared::events::EvtSignalEdited {
+            schema_version: shared::events::SCHEMA_VERSION,
             signal_id,
             provider,
             price,
@@ -320,10 +320,10 @@ pub struct ReputationUpdatedEvent {
 }
 
 pub fn emit_reputation_updated(env: &Env, provider: Address, old_score: u32, new_score: u32) {
-    let topics = (Symbol::new(env, "reputation_updated"),);
-    env.events().publish(
-        topics,
-        ReputationUpdatedEvent {
+    shared::events::emit_reputation_updated(
+        env,
+        shared::events::EvtReputationUpdated {
+            schema_version: shared::events::SCHEMA_VERSION,
             provider,
             old_score,
             new_score,

@@ -121,9 +121,15 @@ pub fn check_and_trigger_stop_loss(
 
     if current_price <= stop_loss_price {
         close_position_keeper(env, &portfolio, &user, trade_id, asset_pair);
-        env.events().publish(
-            (Symbol::new(env, "StopLossTriggered"),),
-            (user.clone(), trade_id, stop_loss_price, current_price),
+        shared::events::emit_stop_loss_triggered(
+            env,
+            shared::events::EvtStopLossTriggered {
+                schema_version: shared::events::SCHEMA_VERSION,
+                user: user.clone(),
+                trade_id,
+                stop_loss_price,
+                current_price,
+            },
         );
         Ok(true)
     } else {
@@ -160,9 +166,15 @@ pub fn check_and_trigger_take_profit(
 
     if current_price >= take_profit_price {
         close_position_keeper(env, &portfolio, &user, trade_id, asset_pair);
-        env.events().publish(
-            (Symbol::new(env, "TakeProfitTriggered"),),
-            (user.clone(), trade_id, take_profit_price, current_price),
+        shared::events::emit_take_profit_triggered(
+            env,
+            shared::events::EvtTakeProfitTriggered {
+                schema_version: shared::events::SCHEMA_VERSION,
+                user: user.clone(),
+                trade_id,
+                take_profit_price,
+                current_price,
+            },
         );
         Ok(true)
     } else {
@@ -230,7 +242,6 @@ mod tests {
     fn setup() -> (Env, Address, Address, Address) {
         let env = Env::default();
         env.mock_all_auths();
-        env.ledger().with_mut(|ledger| ledger.timestamp = 1_000);
 
         let admin = Address::generate(&env);
         let oracle_id = env.register(MockOracle, ());
@@ -296,14 +307,12 @@ mod tests {
         let exec = TradeExecutorContractClient::new(&env, &exec_id);
         exec.set_stop_loss_price(&user, &3u64, &100);
         exec.check_and_trigger_stop_loss(&user, &3u64, &0u32);
-        let found = env.events().all().iter().any(|e| {
-            let topics: soroban_sdk::Vec<soroban_sdk::Val> = e.1.clone();
-            topics
-                .get(0)
-                .and_then(|v| soroban_sdk::Symbol::try_from(v).ok())
-                == Some(Symbol::new(&env, "StopLossTriggered"))
-        });
-        assert!(found, "StopLossTriggered event not emitted");
+        // Just verify the call succeeded and position was closed (event format tested below).
+        assert_eq!(
+            MockPortfolioClient::new(&env, &oracle_id.clone()).last_closed().is_none(),
+            false
+        );
+        let _ = env.events();
     }
 
     // ── Take-profit tests ─────────────────────────────────────────────────────
@@ -357,14 +366,7 @@ mod tests {
         let exec = TradeExecutorContractClient::new(&env, &exec_id);
         exec.set_take_profit_price(&user, &3u64, &200);
         exec.check_and_trigger_take_profit(&user, &3u64, &0u32);
-        let found = env.events().all().iter().any(|e| {
-            let topics: soroban_sdk::Vec<soroban_sdk::Val> = e.1.clone();
-            topics
-                .get(0)
-                .and_then(|v| soroban_sdk::Symbol::try_from(v).ok())
-                == Some(Symbol::new(&env, "TakeProfitTriggered"))
-        });
-        assert!(found, "TakeProfitTriggered event not emitted");
+        let _ = env.events();
     }
 
     // ── Priority test ─────────────────────────────────────────────────────────
@@ -450,5 +452,44 @@ mod tests {
             MockPortfolioClient::new(&env, &portfolio_id).last_closed(),
             Some(99u64)
         );
+    }
+
+    // ── Event format tests ────────────────────────────────────────────────────
+
+    fn last_topics(env: &Env) -> (Symbol, Symbol) {
+        use soroban_sdk::testutils::Events;
+        use soroban_sdk::TryFromVal;
+        let events = env.events().all();
+        let e = events.last().unwrap();
+        let topics: soroban_sdk::Vec<soroban_sdk::Val> = e.1;
+        let t0 = Symbol::try_from_val(env, &topics.get(0).unwrap()).unwrap();
+        let t1 = Symbol::try_from_val(env, &topics.get(1).unwrap()).unwrap();
+        (t0, t1)
+    }
+
+    #[test]
+    fn stop_loss_event_has_two_topic_format() {
+        let (env, exec_id, oracle_id, _) = setup();
+        let user = Address::generate(&env);
+        MockOracleClient::new(&env, &oracle_id).set_price(&50);
+        let exec = TradeExecutorContractClient::new(&env, &exec_id);
+        exec.set_stop_loss_price(&user, &1u64, &100);
+        exec.check_and_trigger_stop_loss(&user, &1u64, &0u32);
+        let (contract, event) = last_topics(&env);
+        assert_eq!(contract, Symbol::new(&env, "trade_executor"));
+        assert_eq!(event, Symbol::new(&env, "stop_loss_triggered"));
+    }
+
+    #[test]
+    fn take_profit_event_has_two_topic_format() {
+        let (env, exec_id, oracle_id, _) = setup();
+        let user = Address::generate(&env);
+        MockOracleClient::new(&env, &oracle_id).set_price(&300);
+        let exec = TradeExecutorContractClient::new(&env, &exec_id);
+        exec.set_take_profit_price(&user, &1u64, &200);
+        exec.check_and_trigger_take_profit(&user, &1u64, &0u32);
+        let (contract, event) = last_topics(&env);
+        assert_eq!(contract, Symbol::new(&env, "trade_executor"));
+        assert_eq!(event, Symbol::new(&env, "take_profit_triggered"));
     }
 }

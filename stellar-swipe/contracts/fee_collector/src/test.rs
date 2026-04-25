@@ -867,3 +867,245 @@ mod property_tests {
         }
     }
 }
+
+// ---------------------------------------------------------------------------
+// Rounding strategy tests
+// ---------------------------------------------------------------------------
+
+/// Verifies that user-paid fees always round DOWN (user-favorable).
+/// trade_amount=9999, fee_rate=30 bps → 9999*30/10000 = 29.997 → truncates to 29.
+#[test]
+fn test_fee_rounds_down_user_favorable() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let admin = Address::generate(&env);
+    let trader = Address::generate(&env);
+    let token_admin = Address::generate(&env);
+    let token = env
+        .register_stellar_asset_contract_v2(token_admin)
+        .address();
+
+    let contract_id = env.register(FeeCollector, ());
+    let client = FeeCollectorClient::new(&env, &contract_id);
+    client.initialize(&admin);
+
+    let (oracle_id, asset) = setup_oracle(&env, 10_000_000);
+    client.set_oracle_contract(&oracle_id);
+    client.set_fee_rate(&30u32); // 0.30%
+    client.set_burn_rate(&0u32); // no burn for clarity
+
+    let trade_amount: i128 = 9_999;
+    StellarAssetClient::new(&env, &token).mint(&trader, &trade_amount);
+
+    let fee = client.collect_fee(&trader, &token, &trade_amount, &asset);
+    // 9999 * 30 / 10000 = 29.997 → truncated to 29 (user pays less, not more)
+    assert_eq!(fee, 29);
+}
+
+/// Verifies that burn rounds DOWN so distributable = fee - burn with no dust.
+/// fee=3000, burn_rate=1000 (10%) → burn=300, distributable=2700. 300+2700=3000 ✓
+/// trade_amount=1_000_001: 1_000_001*30/10_000 = 3000 (truncated, remainder discarded)
+#[test]
+fn test_burn_rounds_down_no_dust() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let admin = Address::generate(&env);
+    let trader = Address::generate(&env);
+    let token_admin = Address::generate(&env);
+    let token = env
+        .register_stellar_asset_contract_v2(token_admin)
+        .address();
+
+    let contract_id = env.register(FeeCollector, ());
+    let client = FeeCollectorClient::new(&env, &contract_id);
+    client.initialize(&admin);
+
+    let (oracle_id, asset) = setup_oracle(&env, 10_000_000);
+    client.set_oracle_contract(&oracle_id);
+    // fee_rate=30 bps, trade_amount=1_000_001 → fee = 1_000_001*30/10_000 = 3000 (truncated)
+    client.set_fee_rate(&30u32);
+    client.set_burn_rate(&1_000u32); // 10%
+
+    let trade_amount: i128 = 1_000_001;
+    StellarAssetClient::new(&env, &token).mint(&trader, &trade_amount);
+
+    let fee = client.collect_fee(&trader, &token, &trade_amount, &asset);
+    assert_eq!(fee, 3_000); // 1_000_001 * 30 / 10_000 = 3000 (truncated)
+
+    // burn = 3000 * 1000 / 10000 = 300 (exact, no truncation needed)
+    // distributable = 3000 - 300 = 2700
+    // treasury must hold exactly 2700 — no dust left unaccounted
+    assert_eq!(client.treasury_balance(&token), 2_700);
+    // burn(300) + treasury(2700) == fee(3000): conservation holds
+    assert_eq!(300 + 2_700, fee);
+}
+
+/// Verifies fee + remainder conservation: the contract never holds unwithdrawable dust.
+/// For any fee_amount, burn_amount + distributable == fee_amount exactly.
+#[test]
+fn test_no_unwithdrawable_dust_accumulates() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let admin = Address::generate(&env);
+    let trader = Address::generate(&env);
+    let token_admin = Address::generate(&env);
+    let token = env
+        .register_stellar_asset_contract_v2(token_admin)
+        .address();
+
+    let contract_id = env.register(FeeCollector, ());
+    let client = FeeCollectorClient::new(&env, &contract_id);
+    client.initialize(&admin);
+
+    let (oracle_id, asset) = setup_oracle(&env, 10_000_000);
+    client.set_oracle_contract(&oracle_id);
+    client.set_fee_rate(&30u32);
+    client.set_burn_rate(&3_333u32); // 33.33% — non-round to stress remainder
+
+    // Use a trade amount that produces a non-round fee
+    let trade_amount: i128 = 777_777;
+    StellarAssetClient::new(&env, &token).mint(&trader, &trade_amount);
+
+    let fee = client.collect_fee(&trader, &token, &trade_amount, &asset);
+    // fee = 777_777 * 30 / 10_000 = 2333 (truncated)
+    assert_eq!(fee, 2_333);
+
+    // burn = 2333 * 3333 / 10_000 = 777 (truncated)
+    // distributable = 2333 - 777 = 1556
+    // 777 + 1556 = 2333 == fee: no dust
+    assert_eq!(client.treasury_balance(&token), 1_556);
+    assert_eq!(777 + 1_556, fee);
+}
+
+/// Verifies minimum-amount boundary: fee_rate=1 bps on small amounts rounds to zero → error.
+#[test]
+fn test_fee_rounded_to_zero_error() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let admin = Address::generate(&env);
+    let trader = Address::generate(&env);
+    let token_admin = Address::generate(&env);
+    let token = env
+        .register_stellar_asset_contract_v2(token_admin)
+        .address();
+
+    let contract_id = env.register(FeeCollector, ());
+    let client = FeeCollectorClient::new(&env, &contract_id);
+    client.initialize(&admin);
+
+    let (oracle_id, asset) = setup_oracle(&env, 10_000_000);
+    client.set_oracle_contract(&oracle_id);
+    client.set_fee_rate(&1u32); // 0.01 bps — minimum
+
+    // trade_amount=9999: 9999 * 1 / 10_000 = 0 → FeeRoundedToZero
+    let trade_amount: i128 = 9_999;
+    StellarAssetClient::new(&env, &token).mint(&trader, &trade_amount);
+
+    let result = client.try_collect_fee(&trader, &token, &trade_amount, &asset);
+    assert_eq!(result, Err(Ok(ContractError::FeeRoundedToZero)));
+}
+
+// ---------------------------------------------------------------------------
+// Overflow / division-by-zero tests
+// ---------------------------------------------------------------------------
+
+/// collect_fee: trade_amount * fee_rate overflows i128 → ArithmeticOverflow.
+/// We use i128::MAX as trade_amount with fee_rate > 1 to force overflow in checked_mul.
+#[test]
+fn test_collect_fee_overflow_returns_error() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let admin = Address::generate(&env);
+    let trader = Address::generate(&env);
+    let token_admin = Address::generate(&env);
+    let token = env
+        .register_stellar_asset_contract_v2(token_admin)
+        .address();
+
+    let contract_id = env.register(FeeCollector, ());
+    let client = FeeCollectorClient::new(&env, &contract_id);
+    client.initialize(&admin);
+
+    let (oracle_id, asset) = setup_oracle(&env, 10_000_000);
+    client.set_oracle_contract(&oracle_id);
+    client.set_fee_rate(&30u32);
+
+    // i128::MAX * 30 overflows — checked_mul returns None → ArithmeticOverflow
+    StellarAssetClient::new(&env, &token).mint(&trader, &i128::MAX);
+    let result = client.try_collect_fee(&trader, &token, &i128::MAX, &asset);
+    assert_eq!(result, Err(Ok(ContractError::ArithmeticOverflow)));
+}
+
+/// queue_withdrawal: queued_at near u64::MAX + SECONDS_PER_DAY overflows → ArithmeticOverflow.
+#[test]
+fn test_queue_withdrawal_timestamp_overflow() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let admin = Address::generate(&env);
+    let recipient = Address::generate(&env);
+    let token_admin = Address::generate(&env);
+    let token = env
+        .register_stellar_asset_contract_v2(token_admin)
+        .address();
+
+    let contract_id = env.register(FeeCollector, ());
+    let client = FeeCollectorClient::new(&env, &contract_id);
+    client.initialize(&admin);
+
+    StellarAssetClient::new(&env, &token).mint(&contract_id, &1000i128);
+    env.as_contract(&contract_id, || {
+        set_treasury_balance(&env, &token, 1000i128);
+    });
+
+    // Set timestamp so that queued_at + SECONDS_PER_DAY (86400) wraps u64
+    env.ledger().set_timestamp(u64::MAX - 100);
+
+    let result = client.try_queue_withdrawal(&recipient, &token, &1000i128);
+    assert_eq!(result, Err(Ok(ContractError::ArithmeticOverflow)));
+}
+
+/// withdraw_treasury_fees: timelock check with queued_at near u64::MAX → ArithmeticOverflow.
+#[test]
+fn test_withdraw_timelock_timestamp_overflow() {
+    use crate::{set_queued_withdrawal, QueuedWithdrawal};
+
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let admin = Address::generate(&env);
+    let recipient = Address::generate(&env);
+    let token_admin = Address::generate(&env);
+    let token = env
+        .register_stellar_asset_contract_v2(token_admin)
+        .address();
+
+    let contract_id = env.register(FeeCollector, ());
+    let client = FeeCollectorClient::new(&env, &contract_id);
+    client.initialize(&admin);
+
+    StellarAssetClient::new(&env, &token).mint(&contract_id, &1000i128);
+    env.as_contract(&contract_id, || {
+        set_treasury_balance(&env, &token, 1000i128);
+        // Manually inject a queued withdrawal with queued_at near u64::MAX
+        set_queued_withdrawal(
+            &env,
+            &QueuedWithdrawal {
+                recipient: recipient.clone(),
+                token: token.clone(),
+                amount: 1000,
+                queued_at: u64::MAX - 100,
+            },
+        );
+    });
+
+    // Current timestamp is 0; queued_at + SECONDS_PER_DAY overflows → ArithmeticOverflow
+    env.ledger().set_timestamp(0);
+    let result = client.try_withdraw_treasury_fees(&recipient, &token, &1000i128);
+    assert_eq!(result, Err(Ok(ContractError::ArithmeticOverflow)));
+}
